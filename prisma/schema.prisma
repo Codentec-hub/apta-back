@@ -1,0 +1,428 @@
+// Fase 3.1 — Fundação técnica: modelagem do banco de dados central
+// (clientes, empresas, responsáveis e setores)
+// Fase 3.3 — Obrigações e acompanhamento (Obrigacao, Atraso)
+// Fase 3.4 — Quadro de demandas (Demanda)
+// Fase 3.5 — Atendimento ao cliente (Atendimento)
+// Fase 3.8 — Financeiro (LancamentoFinanceiro) — contas a pagar/receber
+// próprias do escritório, sem depender de integração com o Conta Azul
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PerfilUsuario {
+  ADMIN
+  GESTOR
+  OPERACIONAL
+}
+
+model Setor {
+  id        String   @id @default(uuid())
+  nome      String   @unique // Fiscal, Pessoal/Folha, Contábil, Financeiro, Atendimento...
+  createdAt DateTime @default(now())
+
+  // Responsável padrão do departamento ("Pessoal - Maria Alice" no
+  // Acessórias): último recurso quando nem a obrigação na empresa nem o
+  // cadastro do cliente definem quem responde pelo prazo.
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation("ResponsavelSetor", fields: [responsavelId], references: [id], onDelete: SetNull)
+
+  usuarios       Usuario[]
+  responsaveisDe ClienteResponsavel[]
+  obrigacoes     Obrigacao[]
+  tiposObrigacao TipoObrigacao[]
+  demandas       Demanda[]
+  atendimentos   Atendimento[]
+
+  @@map("setores")
+}
+
+model Usuario {
+  id        String        @id @default(uuid())
+  nome      String
+  email     String        @unique
+  senhaHash String        @map("senha_hash")
+  perfil    PerfilUsuario @default(OPERACIONAL)
+  ativo     Boolean       @default(true)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  setorId String? @map("setor_id")
+  setor   Setor?  @relation(fields: [setorId], references: [id])
+
+  setoresResponsavel Setor[]              @relation("ResponsavelSetor")
+  comentariosEntrega ComentarioEntrega[]
+  responsabilidades  ClienteResponsavel[]
+  obrigacoes         Obrigacao[]
+  entregasFeitas     Obrigacao[]          @relation("EntreguePor")
+  obrigacoesEmpresa  ClienteObrigacao[]
+  logsObrigacao      LogObrigacao[]
+  demandas           Demanda[]
+  atendimentos       Atendimento[]
+
+  @@map("usuarios")
+}
+
+model Cliente {
+  id               String   @id @default(uuid())
+  razaoSocial      String   @map("razao_social")
+  nomeFantasia     String?  @map("nome_fantasia")
+  cnpj             String   @unique
+  regimeTributario String?  @map("regime_tributario") // Simples Nacional, Lucro Presumido, Lucro Real
+  ativo            Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  responsaveis           ClienteResponsavel[]
+  obrigacoes             Obrigacao[]
+  obrigacoesEmpresa      ClienteObrigacao[]
+  demandas               Demanda[]
+  atendimentos           Atendimento[]
+  lancamentosFinanceiros LancamentoFinanceiro[]
+
+  @@map("clientes")
+}
+
+// Define, por cliente e por setor, qual usuário é o responsável.
+// Ex.: no setor Fiscal, o cliente X é atendido pelo usuário Nathan.
+model ClienteResponsavel {
+  id String @id @default(uuid())
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  setorId String @map("setor_id")
+  setor   Setor  @relation(fields: [setorId], references: [id])
+
+  usuarioId String  @map("usuario_id")
+  usuario   Usuario @relation(fields: [usuarioId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clienteId, setorId])
+  @@map("cliente_responsaveis")
+}
+
+// O que fazer quando um prazo em dia fixo cai em dia não útil.
+enum AjustePrazo {
+  ANTECIPAR
+  POSTERGAR
+  MANTER
+}
+
+enum TipoDias {
+  UTEIS
+  CORRIDOS
+}
+
+// "Cadastro de obrigação" do Acessórias, campo a campo.
+model TipoObrigacao {
+  id                   String   @id @default(uuid())
+  nome                 String
+  mininome             String?
+  tempoPrevistoMinutos Int?     @map("tempo_previsto_minutos")
+  ativo                Boolean  @default(true)
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  // "Entrega Janeiro" … "Entrega Dezembro": um código por mês, igual aos
+  // valores do Acessórias — 0 = não tem; 1–31 = todo dia N; 51–70 = 1º–20º
+  // dia útil; 90 = último dia útil.
+  entregasPorMes       Int[]       @default([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) @map("entregas_por_mes")
+  // "Competências referentes a", em meses relativos ao mês da entrega:
+  // -1 mês anterior, -2, -3, 0 mês atual, 1 mês seguinte; -12 ano
+  // anterior, 12 ano atual (competência anual).
+  competenciaReferente Int         @default(-1) @map("competencia_referente")
+  // "Lembrar responsável quantos dias antes" + "Tipo dos dias antes": é o
+  // prazo técnico (prazo legal menos N dias).
+  diasAntes            Int         @default(0) @map("dias_antes")
+  tipoDiasAntes        TipoDias    @default(CORRIDOS) @map("tipo_dias_antes")
+  // "Prazos fixos em dias não-úteis" e "Sábado é útil?".
+  ajustePrazo          AjustePrazo @default(ANTECIPAR) @map("ajuste_prazo")
+  sabadoUtil           Boolean     @default(false) @map("sabado_util")
+  // "Passível de multa?"
+  geraMulta            Boolean     @default(false) @map("gera_multa")
+  comentarioPadrao     String?     @map("comentario_padrao")
+
+  setorId String @map("setor_id")
+  setor   Setor  @relation(fields: [setorId], references: [id])
+
+  obrigacoes Obrigacao[]
+  empresas   ClienteObrigacao[]
+  regimes    RegimeObrigacao[]
+  grupos     GrupoObrigacaoItem[]
+
+  @@unique([nome, setorId])
+  @@map("tipos_obrigacao")
+}
+
+// Regime tributário como conjunto de obrigações. Aplicar um regime a uma
+// empresa SUBSTITUI as obrigações dela pelas do regime (igual ao Acessórias).
+// O vínculo com o cliente é pelo nome (Cliente.regimeTributario).
+model RegimeTributario {
+  id        String   @id @default(uuid())
+  nome      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  obrigacoes RegimeObrigacao[]
+
+  @@map("regimes_tributarios")
+}
+
+model RegimeObrigacao {
+  regimeId String           @map("regime_id")
+  regime   RegimeTributario @relation(fields: [regimeId], references: [id], onDelete: Cascade)
+  tipoId   String           @map("tipo_id")
+  tipo     TipoObrigacao    @relation(fields: [tipoId], references: [id], onDelete: Cascade)
+
+  @@id([regimeId, tipoId])
+  @@map("regime_obrigacoes")
+}
+
+// Grupo de obrigações: ADICIONA obrigações à empresa sem remover as que já
+// existem — pensado para o onboarding em "linha de produção", em que cada
+// departamento acrescenta o seu grupo e o Fiscal define o regime no final.
+model GrupoObrigacao {
+  id        String   @id @default(uuid())
+  nome      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  obrigacoes GrupoObrigacaoItem[]
+
+  @@map("grupos_obrigacao")
+}
+
+model GrupoObrigacaoItem {
+  grupoId String         @map("grupo_id")
+  grupo   GrupoObrigacao @relation(fields: [grupoId], references: [id], onDelete: Cascade)
+  tipoId  String         @map("tipo_id")
+  tipo    TipoObrigacao  @relation(fields: [tipoId], references: [id], onDelete: Cascade)
+
+  @@id([grupoId, tipoId])
+  @@map("grupo_obrigacao_itens")
+}
+
+// Obrigação alocada numa empresa (cadastro da empresa, agrupado por
+// departamento). Só as ativas geram entregas a cada competência.
+model ClienteObrigacao {
+  id        String   @id @default(uuid())
+  ativa     Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  tipoId String        @map("tipo_id")
+  tipo   TipoObrigacao @relation(fields: [tipoId], references: [id], onDelete: Cascade)
+
+  // Responsável pelo prazo desta obrigação nesta empresa. Nulo = usa o
+  // responsável do departamento no cadastro do cliente (ClienteResponsavel).
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation(fields: [responsavelId], references: [id])
+
+  // Tempo previsto desta obrigação nesta empresa (nulo = o do cadastro).
+  tempoPrevistoMinutos Int? @map("tempo_previsto_minutos")
+
+  @@unique([clienteId, tipoId])
+  @@map("cliente_obrigacoes")
+}
+
+// Uma entrega da "Lista de Entregas": a obrigação de um cliente numa
+// competência, com prazo técnico e legal. Gerada automaticamente a partir
+// das ClienteObrigacao ativas, ou criada avulsa. Se atrasar, recebe um
+// registro de Atraso (justificativa + plano de ação) = "Entrega justificada".
+model Obrigacao {
+  id        String   @id @default(uuid())
+  nome      String // Ex.: "DCTFWeb", "Declaração de ISS mensal"
+  prazo     DateTime // prazo legal (o que vale perante o governo/cliente)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Primeiro dia do mês de competência (nulo em entregas avulsas antigas).
+  competencia DateTime? @db.Date
+
+  // Prazo interno do escritório, tipicamente anterior ao prazo legal, usado
+  // como margem de segurança. Concluir entre os dois prazos é "no prazo
+  // técnico"; concluir antes do prazo técnico é "antecipada".
+  prazoTecnico DateTime? @map("prazo_tecnico")
+
+  // Preenchido ao concluir, para medir produtividade real x tempo previsto
+  // do TipoObrigacao (Fase 3.3 — o que o Emanuell chamou de "tempo médio
+  // que utilizamos para fazer cada coisa").
+  tempoRealMinutos Int? @map("tempo_real_minutos")
+
+  // Obrigação que não se aplica a este cliente (ex.: imune/isento) — conta
+  // à parte nos relatórios, não como pendência nem como atraso.
+  dispensada Boolean @default(false)
+
+  concluidaEm DateTime? @map("concluida_em")
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  setorId String @map("setor_id")
+  setor   Setor  @relation(fields: [setorId], references: [id])
+
+  tipoId String?        @map("tipo_id")
+  tipo   TipoObrigacao? @relation(fields: [tipoId], references: [id])
+
+  // Responsável pelo prazo (quem deve entregar).
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation(fields: [responsavelId], references: [id])
+
+  // Responsável pela entrega (quem de fato marcou como entregue).
+  entreguePorId String?  @map("entregue_por_id")
+  entreguePor   Usuario? @relation("EntreguePor", fields: [entreguePorId], references: [id])
+
+  atraso      Atraso?
+  logs        LogObrigacao[]
+  comentarios ComentarioEntrega[]
+
+  @@unique([clienteId, tipoId, competencia])
+  @@index([competencia])
+  @@map("obrigacoes")
+}
+
+// Registrado quando uma obrigação é (ou vai ser) entregue fora do prazo.
+// O ponto central da Fase 3.3: existe um prazoPrometido para o plano de
+// ação, e o campo `cumprido` é o que hoje NUNCA é verificado na operação
+// manual — aqui vira um dado rastreável.
+model Atraso {
+  id String @id @default(uuid())
+
+  obrigacaoId String    @unique @map("obrigacao_id")
+  obrigacao   Obrigacao @relation(fields: [obrigacaoId], references: [id], onDelete: Cascade)
+
+  justificativa String
+  causaRaiz     String @map("causa_raiz")
+  planoDeAcao   String @map("plano_de_acao")
+
+  prazoPrometido DateTime  @map("prazo_prometido")
+  cumprido       Boolean   @default(false)
+  cumpridoEm     DateTime? @map("cumprido_em")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("atrasos")
+}
+
+// Histórico de alterações de uma entrega (prazos, entrega, reabertura,
+// dispensa) — o "log da operação" que o Acessórias registra.
+model LogObrigacao {
+  id        String   @id @default(uuid())
+  acao      String // Ex.: "prazo_alterado", "entregue", "reaberta", "prazo_em_massa"
+  detalhe   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  obrigacaoId String    @map("obrigacao_id")
+  obrigacao   Obrigacao @relation(fields: [obrigacaoId], references: [id], onDelete: Cascade)
+
+  usuarioId String?  @map("usuario_id")
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([obrigacaoId])
+  @@map("logs_obrigacao")
+}
+
+// Comentários da entrega (coluna "Comentários" da Lista de Entregas).
+model ComentarioEntrega {
+  id        String   @id @default(uuid())
+  texto     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  obrigacaoId String    @map("obrigacao_id")
+  obrigacao   Obrigacao @relation(fields: [obrigacaoId], references: [id], onDelete: Cascade)
+
+  usuarioId String?  @map("usuario_id")
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([obrigacaoId])
+  @@map("comentarios_entrega")
+}
+
+enum StatusDemanda {
+  A_FAZER
+  EM_ANDAMENTO
+  CONCLUIDA
+}
+
+// Quadro kanban por setor para tarefas que não são do dia a dia (ex.:
+// planejamento tributário, estudo de viabilidade) — Fase 3.4, substitui o
+// Trello. Opcionalmente vinculada a um cliente.
+model Demanda {
+  id        String        @id @default(uuid())
+  titulo    String
+  descricao String?
+  status    StatusDemanda @default(A_FAZER)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  setorId String @map("setor_id")
+  setor   Setor  @relation(fields: [setorId], references: [id])
+
+  clienteId String?  @map("cliente_id")
+  cliente   Cliente? @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation(fields: [responsavelId], references: [id])
+
+  @@map("demandas")
+}
+
+enum StatusAtendimento {
+  AGUARDANDO
+  EM_ATENDIMENTO
+  FINALIZADO
+}
+
+// Fila de atendimento ao cliente — Fase 3.5, o painel interno (fila de
+// espera / em atendimento / finalizado) antes de integrar ou substituir o
+// Suri. O responsável é sugerido automaticamente a partir do
+// ClienteResponsavel do setor, mas pode ser trocado manualmente.
+model Atendimento {
+  id          String            @id @default(uuid())
+  motivo      String
+  observacoes String?
+  status      StatusAtendimento @default(AGUARDANDO)
+
+  abertoEm     DateTime  @default(now()) @map("aberto_em")
+  iniciadoEm   DateTime? @map("iniciado_em")
+  finalizadoEm DateTime? @map("finalizado_em")
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  setorId String @map("setor_id")
+  setor   Setor  @relation(fields: [setorId], references: [id])
+
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation(fields: [responsavelId], references: [id])
+
+  @@map("atendimentos")
+}
+
+enum TipoLancamento {
+  PAGAR
+  RECEBER
+}
+
+// Contas a pagar/receber do escritório e dos clientes de BPO Financeiro —
+// Fase 3.8. Propositalmente independente do Conta Azul: é só lançamento
+// próprio, dá pra ter DRE e fluxo de caixa sem nenhuma integração externa.
+// clienteId nulo = despesa/receita do próprio escritório; preenchido =
+// lançamento de um cliente de BPO.
+model LancamentoFinanceiro {
+  id          String         @id @default(uuid())
+  tipo        TipoLancamento
+  descricao   String
+  categoria   String? // Ex.: "Salários", "Honorários", "Impostos", "Aluguel"
+  valor       Float
+  vencimento  DateTime
+  liquidadoEm DateTime?      @map("liquidado_em")
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  clienteId String?  @map("cliente_id")
+  cliente   Cliente? @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+
+  @@map("lancamentos_financeiros")
+}
