@@ -7,6 +7,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { calcularEntrega, competenciaParaDate, somarMeses } from "../obrigacoes/prazos.js";
+import { garantirFeriados } from "../obrigacoes/feriados.js";
 import { gerarJanela } from "../obrigacoes/gerar-entregas.js";
 import { prisma } from "../prisma.js";
 
@@ -15,13 +16,18 @@ export const obrigacoesRouter = Router();
 obrigacoesRouter.use(autenticar);
 
 const obrigacaoInclude = {
-  cliente: { select: { id: true, razaoSocial: true, cnpj: true } },
+  cliente: { select: { id: true, razaoSocial: true, cnpj: true, codigo: true } },
   setor: true,
   tipo: true,
   responsavel: { select: { id: true, nome: true } },
   entreguePor: { select: { id: true, nome: true } },
   atraso: true,
-  _count: { select: { comentarios: true } },
+  // Coluna "Protocolo de entrega": nº, destinatário, enviado/lido.
+  protocolos: {
+    select: { id: true, numero: true, destinatarioNome: true, status: true, enviadoEm: true, lidoEm: true },
+    orderBy: { numero: "asc" },
+  },
+  _count: { select: { comentarios: true, documentos: true } },
 } as const;
 
 const competenciaSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Competência no formato AAAA-MM");
@@ -60,7 +66,15 @@ const listaSchema = z.object({
   prazoLegalAte: z.string().date().optional(),
   entregaDe: z.string().date().optional(),
   entregaAte: z.string().date().optional(),
+  // Situação dos documentos: "sem_documento", "nao_lidos", "lidos".
+  docs: z.enum(["sem_documento", "nao_lidos", "lidos"]).optional(),
 });
+
+const FILTRO_DOCS: Record<string, Prisma.ObrigacaoWhereInput> = {
+  sem_documento: { documentos: { none: {} } },
+  nao_lidos: { protocolos: { some: { lidoEm: null } } },
+  lidos: { protocolos: { some: {} }, NOT: { protocolos: { some: { lidoEm: null } } } },
+};
 
 // Dia civil (AAAA-MM-DD) em Fortaleza → intervalo em UTC.
 function inicioDoDia(dia: string): Date {
@@ -109,7 +123,10 @@ obrigacoesRouter.get("/obrigacoes", asyncHandler(async (req, res) => {
       prazoTecnico: intervalo(f.prazoTecDe, f.prazoTecAte),
       prazo: intervalo(f.prazoLegalDe, f.prazoLegalAte),
       concluidaEm: intervalo(f.entregaDe, f.entregaAte),
-      ...(status.length > 0 && status.length < 4 && { AND: [{ OR: status.map((s) => FILTRO_STATUS[s]) }] }),
+      AND: [
+        ...(status.length > 0 && status.length < 4 ? [{ OR: status.map((s) => FILTRO_STATUS[s]) }] : []),
+        ...(f.docs ? [FILTRO_DOCS[f.docs]] : []),
+      ],
     },
     orderBy: [{ prazoTecnico: "asc" }, { prazo: "asc" }, { cliente: { razaoSocial: "asc" } }],
     include: obrigacaoInclude,
@@ -240,9 +257,11 @@ obrigacoesRouter.post("/obrigacoes", asyncHandler(async (req, res) => {
     // Mês de entrega = competência − "competências referentes a".
     const tipo = await prisma.tipoObrigacao.findUnique({ where: { id: dados.tipoId } });
     if (tipo && Math.abs(tipo.competenciaReferente) !== 12) {
+      await garantirFeriados();
+      const local = await prisma.cliente.findUnique({ where: { id: dados.clienteId }, select: { uf: true, cidade: true } });
       const [ano, mes] = competencia.split("-").map(Number);
       const m = somarMeses(ano, mes, -tipo.competenciaReferente);
-      const calculada = calcularEntrega(tipo, m.ano, m.mes);
+      const calculada = calcularEntrega(tipo, m.ano, m.mes, local ?? {});
       if (calculada) ({ prazo, prazoTecnico } = calculada);
     }
   }

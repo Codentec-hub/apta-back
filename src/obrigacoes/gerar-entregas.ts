@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
+import { garantirFeriados } from "./feriados.js";
 import { calcularEntrega, mesAtual, somarMeses } from "./prazos.js";
 
 // Quantos meses de entrega à frente ficam gerados como pendência (o
@@ -13,6 +14,7 @@ export type FiltroGeracao = { clienteId?: string; tipoId?: string };
 // empresas ativas. Idempotente: a unique (cliente, tipo, competência) impede
 // duplicar, então pode rodar quantas vezes for preciso.
 export async function gerarEntregasDoMes(ano: number, mes: number, filtro: FiltroGeracao = {}): Promise<number> {
+  await garantirFeriados();
   const alocadas = await prisma.clienteObrigacao.findMany({
     where: {
       ativa: true,
@@ -29,7 +31,7 @@ export async function gerarEntregasDoMes(ano: number, mes: number, filtro: Filtr
 
   const dados: Prisma.ObrigacaoCreateManyInput[] = [];
   for (const a of alocadas) {
-    const entrega = calcularEntrega(a.tipo, ano, mes);
+    const entrega = calcularEntrega(a.tipo, ano, mes, a.cliente);
     if (!entrega) continue;
     // Responsável pelo prazo: o da obrigação na empresa → o do departamento
     // no cadastro do cliente → o responsável padrão do departamento.

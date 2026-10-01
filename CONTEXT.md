@@ -1,7 +1,47 @@
 # Contexto do projeto — Sistema Apta
 
 > Documento de retomada rápida. Leia isto antes de continuar o desenvolvimento numa nova sessão.
-> Última atualização: 2026-09-19.
+> Última atualização: 2026-10-01.
+
+## ▶ ONDE PAREI (sessão 2026-09-29 → 10-01) — trabalho EM ANDAMENTO, nada commitado
+
+**Objetivo da sessão:** fechar o que faltava para o módulo de Obrigações funcionar igual ao Acessórias. Diagnóstico feito comparando `SISTEMAS APTA.docx` (prints) + Acessórias real com o código. A maior lacuna era: no Acessórias, **entregar = mandar a guia/declaração ao cliente e saber se ele leu**; aqui "Entregar" só marcava data.
+
+**Itens do plano** (ordem combinada): 1 Contatos da empresa → 3 Feriados CE/Fortaleza → 6 Campos da empresa → 5 Performance → 2 Documento + protocolo → 4 Painel de Indicadores. Envio automático por e-mail/WhatsApp continua fora (integração externa).
+
+### ✅ Feito (backend testado via API; frontend só passou no `tsc`, **ainda não testado no navegador nem no `npm run build`**)
+
+Backend (`backend/`):
+- Migration `prisma/migrations/*_contatos_feriados_protocolos` **já aplicada** no banco local. Novos models: `ContatoCliente` (com setores m:n e `recebeTodos`), `Feriado`, `DocumentoEntrega`, `ProtocoloEntrega` (+ enum `StatusEnvio`). `Cliente` ganhou `codigo` (ID Empresa, autoincrement — existentes numerados por ordem de cadastro), `apelido`, `cidade`, `uf`, `grupoEmpresas`, `honorario`. `TipoObrigacao` ganhou `alertaNaoLida`.
+- Motor de prazos (`src/obrigacoes/prazos.ts`) agora considera feriados cadastrados por UF/cidade da empresa (`Localidade`); carregados por `src/obrigacoes/feriados.ts`. Simulação sem empresa usa `ESCRITORIO_UF`/`ESCRITORIO_CIDADE` (padrão CE/Fortaleza).
+- Rotas novas: `routes/feriados.ts` (CRUD, ADMIN/GESTOR; alterar refaz pendências futuras intocadas), `routes/documentos-entrega.ts` (upload cru com header `X-Nome-Arquivo`, limite 25 MB, em `UPLOAD_DIR`=`./uploads`; protocolos; marcar enviado; cancelar) + **rotas públicas** `/publico/entregas/:token` (montadas ANTES dos routers com `autenticar`, em `server.ts`) — abrir um documento marca o protocolo como lido; `routes/indicadores.ts` (`GET /indicadores?periodo=semana|mes`).
+- `routes/clientes.ts`: campos novos + CRUD de contatos (`/clientes/:id/contatos`, `/contatos/:id`); mudar cidade/UF recalcula pendências futuras.
+- `routes/obrigacoes.ts`: lista traz `protocolos` (resumo), `_count.documentos`, `cliente.codigo`; filtro `docs=sem_documento|nao_lidos|lidos`.
+- Seeds: `npm run prisma:seed-feriados` (19/03 e 25/03 CE; 13/04 e 15/08 Fortaleza — **já rodado**), `npm run prisma:seed-contatos` (contatos demo — **já rodado**, 74 contatos; o `seed-demo` também chama). Clientes demo marcados como Fortaleza/CE.
+- Dockerfile: `VOLUME /app/uploads` + `UPLOAD_DIR`. `uploads/` no `.gitignore`.
+
+Frontend (`frontend/src/`):
+- Tipos novos em `types/domain.ts`; helpers em `lib/documentos-entrega.ts` (upload, abrir doc, link público, links wa.me/mailto).
+- `obrigacoes/documentos-entrega-dialog.tsx` (novo): documentos + protocolos, copiar mensagem, WhatsApp/e-mail com texto pronto (envio manual, marca como enviado), cancelar. Exporta `SeletorDestinatarios`.
+- `obrigacoes/concluir-dialog.tsx`: anexar arquivos + escolher destinatários (pré-marca quem recebe o departamento) → gera protocolo junto com a entrega.
+- `obrigacoes/lista-entregas.tsx`: "Empresa [ID | final CNPJ]", coluna Protocolo real (nº · destinatário · lido/não lido), ícone de alerta de guia não lida, filtro "Documentos", item de menu "Documentos e protocolo".
+- Página pública `app/entrega/[token]/page.tsx` + `components/entrega/entrega-publica.tsx` (o que o cliente abre).
+- `clientes/contatos-empresa.tsx` (novo) dentro do `cliente-form-dialog.tsx`, que ganhou apelido, cidade, UF, grupo, honorário e regimes vindos de `/regimes`. Lista de clientes mostra `[ID]`, cidade/UF e busca por ID.
+
+### ⏳ Falta (próximos passos, nesta ordem)
+
+1. Trocar o label da busca em `clientes-view.tsx` para "Buscar por nome, CNPJ ou ID" (edição interrompida).
+2. Ficha do cliente (`clientes/cliente-detalhe-view.tsx`): mostrar `[ID]`, cidade/UF e o bloco `ContatosEmpresa`.
+3. Cadastro de obrigação (`obrigacoes/tipo-obrigacao-form-dialog.tsx`): select "Alerta guia não-lida?" (`alertaNaoLida` — backend já aceita).
+4. Tela de Feriados (backend pronto): `/dashboard/feriados` no menu de configurações (`layout/config.ts` + `paths.ts`).
+5. Painel Geral (`overview/overview.tsx`): cards do **Painel de Indicadores** (Entregas / A realizar / Docs, semana|mês, endpoint `/indicadores` pronto); na Performance, separar **"Atraso justificado"** (ajustar `pontualidadeDaObrigacao` em `lib/obrigacao-status.ts` — cuidado com a regra das duas funções de status abaixo) e renomear "No prazo" → "Prazo técnico"; gráfico **"Cumprimento de Prazos"** por analista.
+6. Verificação: `npm run typecheck` → parar o `next dev` → `rm -rf .next` → `npm run build` → testar no navegador o fluxo Entregar com anexo → protocolo → abrir link público → ver "lido" na lista.
+7. **Apagar o dado de teste** da smoke test: protocolo nº 1 + documento "Guia DAS set.pdf" na entrega ECD da *Materiais de Construção Bela Vista* (obrigação `1fb3e142-c442-4f0c-8d85-2d2cbdcf0790`) e o arquivo em `backend/uploads/`.
+8. Commit (separar por repositório: `apta-back` e `apta-front`). Já havia alterações não commitadas de antes desta sessão nos Dockerfiles e no `backend/package.json`.
+
+**Dúvida a confirmar no Acessórias real:** a 4ª linha dos blocos "Entregas" e "A realizar" do Painel de Indicadores foi interpretada como "Atraso justificado" (os números do print fecham com categorias exclusivas, mas o rótulo estava cortado).
+
+**Deploy (quando for):** volume persistente para `/app/uploads`; rodar `npm run prisma:seed-feriados` em produção; opcional `ESCRITORIO_UF`/`ESCRITORIO_CIDADE`.
 
 ## O que é
 
@@ -45,7 +85,7 @@ Referência: o próprio Acessórias da Apta, visto (só leitura) em `app.acessor
 - **Empresa**: obrigações por departamento com contadores Entregues/Resolvidas · Atraso téc. · Próx. 30 dias · Futuras 30d+, **tempo previsto por empresa**, Ativa? Sim/Não, responsável; regimes (substituem) e grupos (adicionam).
 - Painel Geral e ficha do cliente olham só até 30 dias à frente (as futuras inflariam "Pendentes").
 - `npm run prisma:seed-obrigacoes` aplica as regras reais no catálogo demo (ex.: Folha no 5º dia útil, IRPJ trimestral no último dia útil, ECD último dia útil de junho) e refaz as pendências futuras.
-- Fora do escopo (dependem de integração/arquivos): Exigir Robô, Alerta de guia não lida, envio ao cliente com protocolo (app/Área VIP/e-mail/WhatsApp); feriados estaduais/municipais (use alteração em massa).
+- Fora do escopo (dependem de integração/arquivos): Exigir Robô, Alerta de guia não lida, envio ao cliente com protocolo (app/Área VIP/e-mail/WhatsApp); feriados estaduais/municipais (use alteração em massa). *(Atualizado em 2026-10-01: protocolo, alerta de guia não lida e feriados estaduais/municipais passaram a ser feitos — ver "ONDE PAREI" no topo. Exigir Robô e o disparo automático continuam fora.)*
 
 ## O que foi feito na sessão de 2026-09-19
 

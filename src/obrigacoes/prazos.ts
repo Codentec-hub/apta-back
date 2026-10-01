@@ -60,8 +60,8 @@ function pascoa(ano: number): DataCivil {
 const cacheFeriados = new Map<number, Set<string>>();
 
 // Feriados nacionais (fixos + móveis: Carnaval, Sexta-feira Santa, Corpus
-// Christi — que na prática param a Receita). Estaduais/municipais ficam de
-// fora: para esses, a alteração de prazos em massa resolve.
+// Christi — que na prática param a Receita). Estaduais e municipais vêm do
+// cadastro de feriados (tabela `feriados`), ver `definirFeriadosCadastrados`.
 function feriadosNacionais(ano: number): Set<string> {
   const emCache = cacheFeriados.get(ano);
   if (emCache) return emCache;
@@ -77,33 +77,71 @@ function feriadosNacionais(ano: number): Set<string> {
   return set;
 }
 
-export function ehDiaUtil(data: DataCivil, sabadoUtil = false): boolean {
-  const dow = diaDaSemana(data);
-  if (dow === 0 || (dow === 6 && !sabadoUtil)) return false;
-  return !feriadosNacionais(data.ano).has(chave(data));
+// Onde a empresa fica — decide quais feriados estaduais/municipais valem.
+export type Localidade = { uf?: string | null; cidade?: string | null };
+
+export type FeriadoCadastrado = {
+  data: Date; // coluna DATE (meia-noite UTC)
+  recorrente: boolean;
+  uf: string | null;
+  cidade: string | null;
+};
+
+let feriadosCadastrados: FeriadoCadastrado[] = [];
+
+// "Fortaleza", "FORTALEZA", "Fortaléza " → "fortaleza".
+export function normalizarCidade(cidade: string | null | undefined): string {
+  return (cidade ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 }
 
-function ajustarParaDiaUtil(data: DataCivil, ajuste: AjustePrazo, sabadoUtil: boolean): DataCivil {
+// Chamado por quem carrega a tabela `feriados` (ver feriados.ts) antes de
+// calcular prazos. Mantido síncrono aqui para o motor seguir puro.
+export function definirFeriadosCadastrados(feriados: FeriadoCadastrado[]): void {
+  feriadosCadastrados = feriados;
+}
+
+function feriadoCadastradoEm(data: DataCivil, local: Localidade): boolean {
+  const uf = (local.uf ?? "").trim().toUpperCase();
+  const cidade = normalizarCidade(local.cidade);
+  return feriadosCadastrados.some((f) => {
+    const mes = f.data.getUTCMonth() + 1;
+    const dia = f.data.getUTCDate();
+    if (mes !== data.mes || dia !== data.dia) return false;
+    if (!f.recorrente && f.data.getUTCFullYear() !== data.ano) return false;
+    if (f.uf && f.uf.toUpperCase() !== uf) return false;
+    if (f.cidade && normalizarCidade(f.cidade) !== cidade) return false;
+    return true;
+  });
+}
+
+export function ehDiaUtil(data: DataCivil, sabadoUtil = false, local: Localidade = {}): boolean {
+  const dow = diaDaSemana(data);
+  if (dow === 0 || (dow === 6 && !sabadoUtil)) return false;
+  if (feriadosNacionais(data.ano).has(chave(data))) return false;
+  return !feriadoCadastradoEm(data, local);
+}
+
+function ajustarParaDiaUtil(data: DataCivil, ajuste: AjustePrazo, sabadoUtil: boolean, local: Localidade): DataCivil {
   if (ajuste === "MANTER") return data;
   const passo = ajuste === "ANTECIPAR" ? -1 : 1;
   let atual = data;
-  while (!ehDiaUtil(atual, sabadoUtil)) atual = somarDias(atual, passo);
+  while (!ehDiaUtil(atual, sabadoUtil, local)) atual = somarDias(atual, passo);
   return atual;
 }
 
-function nEsimoDiaUtil(ano: number, mes: number, n: number, sabadoUtil: boolean): DataCivil {
+function nEsimoDiaUtil(ano: number, mes: number, n: number, sabadoUtil: boolean, local: Localidade): DataCivil {
   let atual: DataCivil = { ano, mes, dia: 1 };
-  let contados = ehDiaUtil(atual, sabadoUtil) ? 1 : 0;
+  let contados = ehDiaUtil(atual, sabadoUtil, local) ? 1 : 0;
   while (contados < n) {
     atual = somarDias(atual, 1);
-    if (ehDiaUtil(atual, sabadoUtil)) contados += 1;
+    if (ehDiaUtil(atual, sabadoUtil, local)) contados += 1;
   }
   return atual;
 }
 
-function ultimoDiaUtil(ano: number, mes: number, sabadoUtil: boolean): DataCivil {
+function ultimoDiaUtil(ano: number, mes: number, sabadoUtil: boolean, local: Localidade): DataCivil {
   let atual: DataCivil = { ano, mes, dia: ultimoDiaDoMes(ano, mes) };
-  while (!ehDiaUtil(atual, sabadoUtil)) atual = somarDias(atual, -1);
+  while (!ehDiaUtil(atual, sabadoUtil, local)) atual = somarDias(atual, -1);
   return atual;
 }
 
@@ -113,25 +151,25 @@ type RegraPrazo = Pick<
 >;
 
 // Data do prazo legal para o mês de entrega, ou null se "Não tem".
-export function dataDeEntrega(regra: RegraPrazo, ano: number, mes: number): DataCivil | null {
+export function dataDeEntrega(regra: RegraPrazo, ano: number, mes: number, local: Localidade = {}): DataCivil | null {
   const codigo = regra.entregasPorMes[mes - 1] ?? CODIGO_NAO_TEM;
   if (codigo === CODIGO_NAO_TEM) return null;
-  if (codigo === CODIGO_ULTIMO_DIA_UTIL) return ultimoDiaUtil(ano, mes, regra.sabadoUtil);
-  if (codigo > 50 && codigo <= 70) return nEsimoDiaUtil(ano, mes, codigo - 50, regra.sabadoUtil);
+  if (codigo === CODIGO_ULTIMO_DIA_UTIL) return ultimoDiaUtil(ano, mes, regra.sabadoUtil, local);
+  if (codigo > 50 && codigo <= 70) return nEsimoDiaUtil(ano, mes, codigo - 50, regra.sabadoUtil, local);
   const dia = Math.min(codigo, ultimoDiaDoMes(ano, mes));
-  return ajustarParaDiaUtil({ ano, mes, dia }, regra.ajustePrazo, regra.sabadoUtil);
+  return ajustarParaDiaUtil({ ano, mes, dia }, regra.ajustePrazo, regra.sabadoUtil, local);
 }
 
-function voltarDias(data: DataCivil, dias: number, tipo: TipoDias, sabadoUtil: boolean): DataCivil {
+function voltarDias(data: DataCivil, dias: number, tipo: TipoDias, sabadoUtil: boolean, local: Localidade): DataCivil {
   if (tipo === "CORRIDOS") {
     // Lembrete em fim de semana/feriado não faz sentido: antecipa.
-    return ajustarParaDiaUtil(somarDias(data, -dias), "ANTECIPAR", sabadoUtil);
+    return ajustarParaDiaUtil(somarDias(data, -dias), "ANTECIPAR", sabadoUtil, local);
   }
   let atual = data;
   let restantes = dias;
   while (restantes > 0) {
     atual = somarDias(atual, -1);
-    if (ehDiaUtil(atual, sabadoUtil)) restantes -= 1;
+    if (ehDiaUtil(atual, sabadoUtil, local)) restantes -= 1;
   }
   return atual;
 }
@@ -152,11 +190,13 @@ export function competenciaDaEntrega(ano: number, mes: number, referente: number
 export function calcularEntrega(
   regra: RegraPrazo,
   ano: number,
-  mes: number
+  mes: number,
+  local: Localidade = {}
 ): { competencia: Date; prazo: Date; prazoTecnico: Date } | null {
-  const legal = dataDeEntrega(regra, ano, mes);
+  const legal = dataDeEntrega(regra, ano, mes, local);
   if (!legal) return null;
-  const tecnico = regra.diasAntes > 0 ? voltarDias(legal, regra.diasAntes, regra.tipoDiasAntes, regra.sabadoUtil) : legal;
+  const tecnico =
+    regra.diasAntes > 0 ? voltarDias(legal, regra.diasAntes, regra.tipoDiasAntes, regra.sabadoUtil, local) : legal;
   return {
     competencia: competenciaDaEntrega(ano, mes, regra.competenciaReferente),
     prazo: fimDoDiaEmFortaleza(legal),

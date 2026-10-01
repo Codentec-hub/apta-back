@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { recalcularFuturas } from "../obrigacoes/gerar-entregas.js";
 import { prisma } from "../prisma.js";
 
 export const clientesRouter = Router();
@@ -12,7 +13,28 @@ const clienteInclude = {
   responsaveis: {
     include: { setor: true, usuario: true },
   },
+  contatos: {
+    where: { ativo: true },
+    orderBy: { nome: "asc" },
+    include: { setores: { select: { id: true, nome: true } } },
+  },
 } as const;
+
+// Campos do cadastro da empresa no Acessórias além do básico.
+const camposEmpresa = {
+  apelido: z.string().trim().optional().nullable(),
+  cidade: z.string().trim().optional().nullable(),
+  uf: z
+    .string()
+    .trim()
+    .length(2)
+    .transform((v) => v.toUpperCase())
+    .optional()
+    .nullable()
+    .or(z.literal("").transform(() => null)),
+  grupoEmpresas: z.string().trim().optional().nullable(),
+  honorario: z.coerce.number().min(0).optional().nullable(),
+};
 
 clientesRouter.get("/clientes", asyncHandler(async (_req, res) => {
   const clientes = await prisma.cliente.findMany({
@@ -41,6 +63,7 @@ const criarClienteSchema = z.object({
   nomeFantasia: z.string().optional().nullable(),
   cnpj: z.string().min(1),
   regimeTributario: z.string().optional().nullable(),
+  ...camposEmpresa,
 });
 
 clientesRouter.post("/clientes", asyncHandler(async (req, res) => {
@@ -69,6 +92,7 @@ const atualizarClienteSchema = z.object({
   cnpj: z.string().min(1).optional(),
   regimeTributario: z.string().optional().nullable(),
   ativo: z.boolean().optional(),
+  ...camposEmpresa,
 });
 
 clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
@@ -99,6 +123,15 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
     data: parsed.data,
     include: clienteInclude,
   });
+
+  // Mudou a localidade → os feriados estaduais/municipais que valem mudam,
+  // e com eles os dias úteis das pendências futuras.
+  if (
+    (parsed.data.uf !== undefined && parsed.data.uf !== clienteExistente.uf) ||
+    (parsed.data.cidade !== undefined && parsed.data.cidade !== clienteExistente.cidade)
+  ) {
+    await recalcularFuturas({ clienteId: cliente.id });
+  }
   res.json(cliente);
 }));
 
@@ -152,5 +185,83 @@ clientesRouter.delete("/clientes/:id/responsaveis/:setorId", asyncHandler(async 
     })
     .catch(() => null);
 
+  res.status(204).send();
+}));
+
+// "Contatos na empresa" — quem recebe os documentos de cada departamento.
+const contatoSchema = z.object({
+  nome: z.string().trim().min(1),
+  cargo: z.string().trim().optional().nullable(),
+  celular: z.string().trim().optional().nullable(),
+  email: z.string().trim().email().optional().nullable().or(z.literal("").transform(() => null)),
+  recebeTodos: z.boolean().default(true),
+  setorIds: z.array(z.string().uuid()).default([]),
+});
+
+const contatoInclude = { setores: { select: { id: true, nome: true } } } as const;
+
+clientesRouter.get("/clientes/:id/contatos", asyncHandler(async (req, res) => {
+  const contatos = await prisma.contatoCliente.findMany({
+    where: { clienteId: req.params.id, ativo: true },
+    orderBy: { nome: "asc" },
+    include: contatoInclude,
+  });
+  res.json(contatos);
+}));
+
+clientesRouter.post("/clientes/:id/contatos", asyncHandler(async (req, res) => {
+  const parsed = contatoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ erro: "Informe ao menos o nome (e-mail, se houver, precisa ser válido)" });
+    return;
+  }
+  const cliente = await prisma.cliente.findUnique({ where: { id: req.params.id } });
+  if (!cliente) {
+    res.status(404).json({ erro: "Cliente não encontrado" });
+    return;
+  }
+  const { setorIds, ...dados } = parsed.data;
+  const contato = await prisma.contatoCliente.create({
+    data: {
+      ...dados,
+      clienteId: cliente.id,
+      setores: { connect: dados.recebeTodos ? [] : setorIds.map((id) => ({ id })) },
+    },
+    include: contatoInclude,
+  });
+  res.status(201).json(contato);
+}));
+
+clientesRouter.put("/contatos/:id", asyncHandler(async (req, res) => {
+  const parsed = contatoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ erro: "Informe ao menos o nome (e-mail, se houver, precisa ser válido)" });
+    return;
+  }
+  const existente = await prisma.contatoCliente.findUnique({ where: { id: req.params.id } });
+  if (!existente) {
+    res.status(404).json({ erro: "Contato não encontrado" });
+    return;
+  }
+  const { setorIds, ...dados } = parsed.data;
+  const contato = await prisma.contatoCliente.update({
+    where: { id: req.params.id },
+    data: {
+      ...dados,
+      setores: { set: dados.recebeTodos ? [] : setorIds.map((id) => ({ id })) },
+    },
+    include: contatoInclude,
+  });
+  res.json(contato);
+}));
+
+// Inativa em vez de apagar: protocolos antigos continuam apontando para ele.
+clientesRouter.delete("/contatos/:id", asyncHandler(async (req, res) => {
+  const existente = await prisma.contatoCliente.findUnique({ where: { id: req.params.id } });
+  if (!existente) {
+    res.status(404).json({ erro: "Contato não encontrado" });
+    return;
+  }
+  await prisma.contatoCliente.update({ where: { id: req.params.id }, data: { ativo: false } });
   res.status(204).send();
 }));

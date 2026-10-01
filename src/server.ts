@@ -14,6 +14,9 @@ import { agendarGeracaoAutomatica } from "./obrigacoes/gerar-entregas.js";
 import { demandasRouter } from "./routes/demandas.js";
 import { atendimentosRouter } from "./routes/atendimentos.js";
 import { financeiroRouter } from "./routes/financeiro.js";
+import { feriadosRouter } from "./routes/feriados.js";
+import { indicadoresRouter } from "./routes/indicadores.js";
+import { documentosEntregaRouter, entregaPublicaRouter } from "./routes/documentos-entrega.js";
 
 const app = express();
 
@@ -21,6 +24,9 @@ app.use(cors());
 app.use(express.json());
 
 app.use(healthRouter);
+// Link público do protocolo de entrega (sem login) — antes dos routers que
+// exigem autenticação para tudo que passa por eles.
+app.use(entregaPublicaRouter);
 app.use(authRouter);
 app.use(usuariosRouter);
 app.use(setoresRouter);
@@ -31,6 +37,9 @@ app.use(cadastroObrigacoesRouter);
 app.use(demandasRouter);
 app.use(atendimentosRouter);
 app.use(financeiroRouter);
+app.use(feriadosRouter);
+app.use(indicadoresRouter);
+app.use(documentosEntregaRouter);
 
 // Rede de segurança: qualquer erro não tratado numa rota cai aqui em vez de
 // derrubar o processo (evita que um erro do Prisma, por exemplo, tire a API

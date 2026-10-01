@@ -8,6 +8,7 @@
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import { configurarObrigacoes } from "./seed-obrigacoes.js";
+import { criarContatosDemo } from "./seed-contatos.js";
 
 const prisma = new PrismaClient();
 
@@ -219,11 +220,16 @@ async function main() {
         razaoSocial: c.nome,
         cnpj,
         regimeTributario: c.regime,
+        cidade: "Fortaleza",
+        uf: "CE",
         ativo: !chance(8), // ~8% inativos, pra ter variedade no filtro
       },
     });
     clientes.push(cliente);
   }
+
+  console.log("Criando contatos das empresas...");
+  await criarContatosDemo(prisma, clientes, setores);
 
   console.log("Atribuindo responsáveis por setor...");
   for (const cliente of clientes) {

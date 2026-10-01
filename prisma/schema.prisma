@@ -36,6 +36,7 @@ model Setor {
   responsaveisDe ClienteResponsavel[]
   obrigacoes     Obrigacao[]
   tiposObrigacao TipoObrigacao[]
+  contatos       ContatoCliente[]
   demandas       Demanda[]
   atendimentos   Atendimento[]
 
@@ -56,6 +57,8 @@ model Usuario {
 
   setoresResponsavel Setor[]              @relation("ResponsavelSetor")
   comentariosEntrega ComentarioEntrega[]
+  documentosEnviados DocumentoEntrega[]
+  protocolos         ProtocoloEntrega[]
   responsabilidades  ClienteResponsavel[]
   obrigacoes         Obrigacao[]
   entregasFeitas     Obrigacao[]          @relation("EntreguePor")
@@ -76,7 +79,17 @@ model Cliente {
   ativo            Boolean  @default(true)
   createdAt        DateTime @default(now()) @map("created_at")
 
+  // "ID Empresa" do Acessórias: número curto que identifica a empresa em
+  // toda a operação ("DPLUS [080]", "Empresa [ID|final CNPJ]").
+  codigo        Int     @unique @default(autoincrement())
+  apelido       String?
+  cidade        String?
+  uf            String? @db.Char(2)
+  grupoEmpresas String? @map("grupo_empresas")
+  honorario     Float?
+
   responsaveis           ClienteResponsavel[]
+  contatos               ContatoCliente[]
   obrigacoes             Obrigacao[]
   obrigacoesEmpresa      ClienteObrigacao[]
   demandas               Demanda[]
@@ -144,6 +157,9 @@ model TipoObrigacao {
   sabadoUtil           Boolean     @default(false) @map("sabado_util")
   // "Passível de multa?"
   geraMulta            Boolean     @default(false) @map("gera_multa")
+  // "Alerta guia não-lida?": destaca entregas cujo documento o cliente
+  // ainda não abriu.
+  alertaNaoLida        Boolean     @default(false) @map("alerta_nao_lida")
   comentarioPadrao     String?     @map("comentario_padrao")
 
   setorId String @map("setor_id")
@@ -278,6 +294,8 @@ model Obrigacao {
   atraso      Atraso?
   logs        LogObrigacao[]
   comentarios ComentarioEntrega[]
+  documentos  DocumentoEntrega[]
+  protocolos  ProtocoloEntrega[]
 
   @@unique([clienteId, tipoId, competencia])
   @@index([competencia])
@@ -339,6 +357,98 @@ model ComentarioEntrega {
 
   @@index([obrigacaoId])
   @@map("comentarios_entrega")
+}
+
+// "Contatos na empresa" do Acessórias: quem, no cliente, recebe os
+// documentos de cada departamento (folha → pessoa X, impostos → pessoa Y,
+// ou todos recebem tudo).
+model ContatoCliente {
+  id          String   @id @default(uuid())
+  nome        String
+  cargo       String?
+  celular     String?
+  email       String?
+  // true = recebe de todos os departamentos; false = só dos `setores`.
+  recebeTodos Boolean  @default(true) @map("recebe_todos")
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  setores   Setor[]
+
+  protocolos ProtocoloEntrega[]
+
+  @@index([clienteId])
+  @@map("contatos_cliente")
+}
+
+// Feriados além dos nacionais (que são calculados). Sem UF = vale para
+// todas as empresas; com UF = empresas daquele estado; com UF + cidade =
+// só daquele município. Recorrente = repete todo ano no mesmo dia/mês.
+model Feriado {
+  id         String   @id @default(uuid())
+  data       DateTime @db.Date
+  descricao  String
+  recorrente Boolean  @default(true)
+  uf         String?  @db.Char(2)
+  cidade     String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("feriados")
+}
+
+// Arquivo (guia, declaração, recibo) anexado a uma entrega.
+model DocumentoEntrega {
+  id          String   @id @default(uuid())
+  nomeArquivo String   @map("nome_arquivo")
+  mimeType    String   @map("mime_type")
+  tamanho     Int
+  caminho     String // relativo a UPLOAD_DIR
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  obrigacaoId String    @map("obrigacao_id")
+  obrigacao   Obrigacao @relation(fields: [obrigacaoId], references: [id], onDelete: Cascade)
+  usuarioId   String?   @map("usuario_id")
+  usuario     Usuario?  @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([obrigacaoId])
+  @@map("documentos_entrega")
+}
+
+enum StatusEnvio {
+  AGUARDANDO_ENVIO // link gerado, ainda não disparado por nenhum canal
+  ENVIADO
+  FALHA
+}
+
+// "Protocolo de entrega": os documentos de uma entrega endereçados a um
+// contato do cliente. O link público (token) é o que o cliente abre; a
+// primeira abertura marca como lido ("Docs lidos / não lidos").
+model ProtocoloEntrega {
+  id                  String      @id @default(uuid())
+  numero              Int         @unique @default(autoincrement())
+  token               String      @unique
+  destinatarioNome    String      @map("destinatario_nome")
+  destinatarioEmail   String?     @map("destinatario_email")
+  destinatarioCelular String?     @map("destinatario_celular")
+  status              StatusEnvio @default(AGUARDANDO_ENVIO)
+  canal               String? // "link" hoje; "email"/"whatsapp" quando houver integração
+  erroEnvio           String?     @map("erro_envio")
+  enviadoEm           DateTime?   @map("enviado_em")
+  lidoEm              DateTime?   @map("lido_em")
+  acessos             Int         @default(0)
+  createdAt           DateTime    @default(now()) @map("created_at")
+
+  obrigacaoId String          @map("obrigacao_id")
+  obrigacao   Obrigacao       @relation(fields: [obrigacaoId], references: [id], onDelete: Cascade)
+  contatoId   String?         @map("contato_id")
+  contato     ContatoCliente? @relation(fields: [contatoId], references: [id], onDelete: SetNull)
+  usuarioId   String?         @map("usuario_id")
+  usuario     Usuario?        @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([obrigacaoId])
+  @@map("protocolos_entrega")
 }
 
 enum StatusDemanda {

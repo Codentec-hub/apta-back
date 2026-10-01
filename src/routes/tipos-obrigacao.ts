@@ -11,6 +11,7 @@ import {
   recalcularFuturas,
   removerFuturasIntocadas,
 } from "../obrigacoes/gerar-entregas.js";
+import { garantirFeriados } from "../obrigacoes/feriados.js";
 import { calcularEntrega, competenciaParaDate, mesAtual, somarMeses } from "../obrigacoes/prazos.js";
 import { prisma } from "../prisma.js";
 
@@ -43,6 +44,7 @@ const tipoObrigacaoSchema = regraSchema.partial().extend({
   setorId: z.string().uuid(),
   tempoPrevistoMinutos: z.coerce.number().int().min(0).optional().nullable(),
   geraMulta: z.boolean().optional(),
+  alertaNaoLida: z.boolean().optional(),
   comentarioPadrao: z.string().optional().nullable(),
   ativo: z.boolean().optional(),
 });
@@ -125,11 +127,14 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/simular-prazos", asyncHandler(async 
     res.status(400).json({ erro: parsed.error.flatten() });
     return;
   }
+  await garantirFeriados();
+  // Sem empresa específica: simula com a localidade do escritório.
+  const local = { uf: process.env.ESCRITORIO_UF ?? "CE", cidade: process.env.ESCRITORIO_CIDADE ?? "Fortaleza" };
   const { ano, mes } = mesAtual();
   const resultado = [];
   for (let i = 0; i < 12; i++) {
     const m = somarMeses(ano, mes, i);
-    const entrega = calcularEntrega(parsed.data, m.ano, m.mes);
+    const entrega = calcularEntrega(parsed.data, m.ano, m.mes, local);
     if (entrega) resultado.push(entrega);
   }
   res.json(resultado);
