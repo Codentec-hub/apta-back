@@ -72,9 +72,12 @@ indicadoresRouter.get("/indicadores", asyncHandler(async (req, res) => {
   for (const o of entregues) {
     const concluida = o.concluidaEm!;
     if (concluida > o.prazo) {
-      if (o.atraso) entregas.atrasoJustificado += 1;
-      else entregas.atrasadas += 1;
-      if (o.tipo?.geraMulta) entregas.atrasadasComMulta += 1;
+      if (o.atraso) {
+        entregas.atrasoJustificado += 1;
+      } else {
+        entregas.atrasadas += 1;
+        if (o.tipo?.geraMulta) entregas.atrasadasComMulta += 1;
+      }
     } else if (o.prazoTecnico && concluida <= o.prazoTecnico) {
       entregas.antecipadas += 1;
     } else {
@@ -85,9 +88,12 @@ indicadoresRouter.get("/indicadores", asyncHandler(async (req, res) => {
   const realizar = { total: aRealizar.length, prazoAntecipado: 0, prazoTecnico: 0, atrasoLegal: 0, atrasoLegalComMulta: 0, atrasoJustificado: 0 };
   for (const o of aRealizar) {
     if (o.prazo < agora) {
-      if (o.atraso) realizar.atrasoJustificado += 1;
-      else realizar.atrasoLegal += 1;
-      if (o.tipo?.geraMulta) realizar.atrasoLegalComMulta += 1;
+      if (o.atraso) {
+        realizar.atrasoJustificado += 1;
+      } else {
+        realizar.atrasoLegal += 1;
+        if (o.tipo?.geraMulta) realizar.atrasoLegalComMulta += 1;
+      }
     } else if (o.prazoTecnico && o.prazoTecnico < agora) {
       realizar.prazoTecnico += 1; // passou do técnico, ainda dentro do legal
     } else {
