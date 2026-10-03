@@ -447,8 +447,40 @@ model ProtocoloEntrega {
   usuarioId   String?         @map("usuario_id")
   usuario     Usuario?        @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
 
+  alertasNaoLida AlertaNaoLida[]
+
   @@index([obrigacaoId])
   @@map("protocolos_entrega")
+}
+
+// Configuração geral do envio de e-mails ao cliente (linha única, id = 1).
+// Espelha "Configurações do envio dos e-mails" do Acessórias.
+model ConfiguracaoEnvio {
+  id                   Int      @id @default(1)
+  // Lembrete de guia não lida: quantos dias antes do vencimento avisar o
+  // cliente (vale para os tipos de obrigação com `alertaNaoLida`).
+  diasAlertaNaoLida    Int[]    @default([3, 1]) @map("dias_alerta_nao_lida")
+  prefixoAlertaNaoLida String   @default("[Guia não visualizada]") @map("prefixo_alerta_nao_lida")
+  // Texto opcional em destaque no topo do e-mail de lembrete.
+  avisoCabecalho       String?  @map("aviso_cabecalho")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("configuracao_envio")
+}
+
+// Lembrete de guia não lida já disparado (um por protocolo e por "dias
+// antes"), para não repetir o mesmo aviso.
+model AlertaNaoLida {
+  id        String   @id @default(uuid())
+  diasAntes Int      @map("dias_antes")
+  enviadoEm DateTime @default(now()) @map("enviado_em")
+  erro      String?
+
+  protocoloId String           @map("protocolo_id")
+  protocolo   ProtocoloEntrega @relation(fields: [protocoloId], references: [id], onDelete: Cascade)
+
+  @@unique([protocoloId, diasAntes])
+  @@map("alertas_nao_lida")
 }
 
 enum StatusDemanda {

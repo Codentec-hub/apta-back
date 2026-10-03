@@ -1,9 +1,9 @@
 # Contexto do projeto — Sistema Apta
 
 > Documento de retomada rápida. Leia isto antes de continuar o desenvolvimento numa nova sessão.
-> Última atualização: 2026-10-01.
+> Última atualização: 2026-10-03.
 
-## ▶ ONDE PAREI (sessão 2026-09-29 → 10-01) — trabalho EM ANDAMENTO, nada commitado
+## ▶ ONDE PAREI (sessão 2026-09-29 → 10-01) — subido como WIP em 2026-10-01
 
 **Objetivo da sessão:** fechar o que faltava para o módulo de Obrigações funcionar igual ao Acessórias. Diagnóstico feito comparando `SISTEMAS APTA.docx` (prints) + Acessórias real com o código. A maior lacuna era: no Acessórias, **entregar = mandar a guia/declaração ao cliente e saber se ele leu**; aqui "Entregar" só marcava data.
 
@@ -28,16 +28,24 @@ Frontend (`frontend/src/`):
 - Página pública `app/entrega/[token]/page.tsx` + `components/entrega/entrega-publica.tsx` (o que o cliente abre).
 - `clientes/contatos-empresa.tsx` (novo) dentro do `cliente-form-dialog.tsx`, que ganhou apelido, cidade, UF, grupo, honorário e regimes vindos de `/regimes`. Lista de clientes mostra `[ID]`, cidade/UF e busca por ID.
 
-### ⏳ Falta (próximos passos, nesta ordem)
+### ✅ Itens 1–4 do "Falta" anterior — feitos pelo Marcus (Mpdias7) em 2026-10-01
 
-1. Trocar o label da busca em `clientes-view.tsx` para "Buscar por nome, CNPJ ou ID" (edição interrompida).
-2. Ficha do cliente (`clientes/cliente-detalhe-view.tsx`): mostrar `[ID]`, cidade/UF e o bloco `ContatosEmpresa`.
-3. Cadastro de obrigação (`obrigacoes/tipo-obrigacao-form-dialog.tsx`): select "Alerta guia não-lida?" (`alertaNaoLida` — backend já aceita).
-4. Tela de Feriados (backend pronto): `/dashboard/feriados` no menu de configurações (`layout/config.ts` + `paths.ts`).
-5. Painel Geral (`overview/overview.tsx`): cards do **Painel de Indicadores** (Entregas / A realizar / Docs, semana|mês, endpoint `/indicadores` pronto); na Performance, separar **"Atraso justificado"** (ajustar `pontualidadeDaObrigacao` em `lib/obrigacao-status.ts` — cuidado com a regra das duas funções de status abaixo) e renomear "No prazo" → "Prazo técnico"; gráfico **"Cumprimento de Prazos"** por analista.
-6. Verificação: `npm run typecheck` → parar o `next dev` → `rm -rf .next` → `npm run build` → testar no navegador o fluxo Entregar com anexo → protocolo → abrir link público → ver "lido" na lista.
-7. **Apagar o dado de teste** da smoke test: protocolo nº 1 + documento "Guia DAS set.pdf" na entrega ECD da *Materiais de Construção Bela Vista* (obrigação `1fb3e142-c442-4f0c-8d85-2d2cbdcf0790`) e o arquivo em `backend/uploads/`.
-8. Commit (separar por repositório: `apta-back` e `apta-front`). Já havia alterações não commitadas de antes desta sessão nos Dockerfiles e no `backend/package.json`.
+Busca de clientes por ID, ficha do cliente com ID/cidade/contatos, "Alerta guia não-lida?" no cadastro de obrigação e tela de Feriados (`/dashboard/feriados`). Já está em `apta-front/main` e foi trazido para cá.
+
+## ▶ PLANO PARA FECHAR OBRIGAÇÕES (combinado em 2026-10-03)
+
+Meta: o módulo funcionar como no Acessórias, onde **entregar** significa mandar a guia ao cliente e saber se ele leu. Ordem:
+
+1. ✅ **(feito 2026-10-03, ainda não commitado)** **Envio automático por e-mail** (Resend, via HTTP, sem SDK). Código: `backend/src/envio/email.ts` + `mensagem-protocolo.ts`; rotas `GET /envio/canais`, `POST /protocolos/:id/enviar-email`, `enviarEmail` em `POST /obrigacoes/:id/protocolos`. Variáveis em `backend/.env.example` (`RESEND_API_KEY`, `EMAIL_REMETENTE`, `APP_URL`; `EMAIL_MODO=log` em dev só imprime no console). Testado via API + navegador em modo log e com chave inválida (falha registrada). Falta: teste com chave real do Resend e `npm run build` do front. Ao entregar com anexo, o protocolo é disparado por e-mail para quem tem e-mail; no diálogo "Documentos e protocolo" dá para enviar ou reenviar um a um. Falha fica registrada (`status FALHA` + `erroEnvio`). O e-mail leva o **link** do protocolo, e não o anexo, para continuar sabendo se foi lido.
+2. ✅ **(feito 2026-10-03: commits do Marcus aplicados com `git am`, autoria preservada; ainda não subidos)** **Integrar o que o Marcus deixou em branches**: `apta-front/feature/atraso-justificado` (Painel de Indicadores + coluna "Atraso justificado") e `apta-back/fix/indicadores-com-multa`.
+3. ✅ **(feito 2026-10-03, não commitado: `overview.tsx`, conta = (antecipadas + prazo técnico) / tudo com desfecho, sem dispensadas e pendentes no prazo)** **Performance como no print 5**: renomear "No prazo" para "Prazo técnico" e criar o gráfico "Cumprimento de Prazos" por analista.
+4. ✅ **(feito 2026-10-03, não commitado)** **Alerta de guia não lida**, como no Acessórias (ajuda: app.acessorias.com/sysajuda.php?p=43): lembrete por e-mail **ao cliente** X dias antes do vencimento, para tipos com `alertaNaoLida`, protocolo enviado e não lido. Dias, prefixo do assunto ("[Guia não visualizada]") e aviso no topo ficam em `ConfiguracaoEnvio` (tela Configurações → E-mails ao cliente). Rotina `src/obrigacoes/alerta-nao-lida.ts`: roda de hora em hora, só depois das 8h, não lembra no mesmo dia do envio, cada lembrete sai uma vez (`AlertaNaoLida`, único por protocolo + dias). Migration `*_alerta_guia_nao_lida`. Testado com data simulada.
+5. **WhatsApp** (Evolution API, auto-hospedado no EasyPanel). **Bloqueado**: precisa de um número dedicado, decisão do Rafael/Emanuell. Risco de banimento por ser API não-oficial (alternativa: WhatsApp Business Cloud API da Meta).
+6. **Validação ponta a ponta no navegador**: entregar com anexo, e-mail chegar, abrir o link, aparecer "lido" na lista e no painel Docs.
+7. **Produção**: `RESEND_API_KEY`, domínio `contabilidadeapta.com.br` verificado no Resend (registros DNS), `EMAIL_REMETENTE`, `APP_URL=https://app.contabilidadeapta.com.br`, volume persistente em `/app/uploads`, `npm run prisma:seed-feriados`.
+8. **Limpeza e commit**: apagar o dado de teste (protocolos nº 1, 2 e 3 — os `alertas_nao_lida` do nº 2 caem junto —, documentos "Guia DAS set.pdf" e "TESTE-email.pdf", com os logs `documento_*`/`protocolo_*`/`alerta_*` dessas entregas; os testes de 2026-10-03 usaram a entrega Férias da *Pizzaria Crocante*, obrigação `1be8e219-e1d1-4d31-b01f-9b990dd517e8`) — antes: protocolo nº 1 + "Guia DAS set.pdf" na entrega ECD da *Materiais de Construção Bela Vista*, obrigação `1fb3e142-c442-4f0c-8d85-2d2cbdcf0790`, e o arquivo em `backend/uploads/`). Para subir, os commits do front precisam entrar **em cima de `apta-front/main`** (o Marcus também sobe lá).
+
+Fora do escopo de Obrigações: Exigir Robô (depende de SIEG/robôs).
 
 **Dúvida a confirmar no Acessórias real:** a 4ª linha dos blocos "Entregas" e "A realizar" do Painel de Indicadores foi interpretada como "Atraso justificado" (os números do print fecham com categorias exclusivas, mas o rótulo estava cortado).
 

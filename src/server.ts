@@ -17,6 +17,8 @@ import { financeiroRouter } from "./routes/financeiro.js";
 import { feriadosRouter } from "./routes/feriados.js";
 import { indicadoresRouter } from "./routes/indicadores.js";
 import { documentosEntregaRouter, entregaPublicaRouter } from "./routes/documentos-entrega.js";
+import { configuracaoEnvioRouter } from "./routes/configuracao-envio.js";
+import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
 
 const app = express();
 
@@ -40,6 +42,7 @@ app.use(financeiroRouter);
 app.use(feriadosRouter);
 app.use(indicadoresRouter);
 app.use(documentosEntregaRouter);
+app.use(configuracaoEnvioRouter);
 
 // Rede de segurança: qualquer erro não tratado numa rota cai aqui em vez de
 // derrubar o processo (evita que um erro do Prisma, por exemplo, tire a API
@@ -54,4 +57,5 @@ const port = Number(process.env.PORT ?? 3333);
 app.listen(port, () => {
   console.log(`API do Sistema Apta rodando na porta ${port}`);
   agendarGeracaoAutomatica();
+  agendarAlertasNaoLida();
 });

@@ -3,9 +3,9 @@
 // cliente que recebe aquele departamento, e o sistema registra quando o
 // cliente abre o documento ("Docs lidos / não lidos").
 //
-// Envio automático por e-mail/WhatsApp depende de integração externa e ainda
-// não existe: o protocolo nasce "Aguardando envio" com um link público, que o
-// analista manda pelo canal que já usa e marca como enviado.
+// O protocolo nasce "Aguardando envio" com um link público. Por e-mail o
+// disparo é automático (Resend, ver ../envio/email.ts); WhatsApp ainda é
+// manual: o analista manda o link e marca como enviado.
 import { randomBytes, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
@@ -16,6 +16,9 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
+import { emailConfigurado, enviarEmail } from "../envio/email.js";
+import { mensagemProtocolo } from "../envio/mensagem-protocolo.js";
+import { dadosDoProtocolo } from "../envio/protocolo.js";
 
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR ?? "uploads");
 const LIMITE_ARQUIVO = "25mb";
@@ -63,6 +66,7 @@ const protocoloSelect = {
   createdAt: true,
   contatoId: true,
   usuario: { select: { id: true, nome: true } },
+  alertasNaoLida: { select: { diasAntes: true, enviadoEm: true, erro: true }, orderBy: { enviadoEm: "asc" } },
 } as const;
 
 const documentoSelect = {
@@ -152,11 +156,50 @@ entregaPublicaRouter.get("/publico/entregas/:token/documentos/:docId", asyncHand
 }));
 
 // ---------------------------------------------------------------------------
+// Disparo do protocolo por e-mail. Falha de entrega não lança: fica gravada no
+// protocolo (status FALHA + erroEnvio) para aparecer em "Falha no envio".
+// ---------------------------------------------------------------------------
+async function dispararEmail(protocoloId: string, usuarioId: string | null) {
+  const dados = await dadosDoProtocolo(protocoloId, usuarioId);
+  const protocolo = await prisma.protocoloEntrega.findUniqueOrThrow({ where: { id: protocoloId } });
+
+  let erroEnvio: string | null = null;
+  try {
+    await enviarEmail(mensagemProtocolo(dados));
+  } catch (error) {
+    erroEnvio = error instanceof Error ? error.message : String(error);
+  }
+
+  const atualizado = await prisma.protocoloEntrega.update({
+    where: { id: protocolo.id },
+    // Reenvio que falha não apaga um envio anterior que deu certo.
+    data: erroEnvio
+      ? { status: protocolo.enviadoEm ? "ENVIADO" : "FALHA", canal: "email", erroEnvio }
+      : { status: "ENVIADO", canal: "email", enviadoEm: new Date(), erroEnvio: null },
+    select: protocoloSelect,
+  });
+  await registrarLog(
+    protocolo.obrigacaoId,
+    usuarioId,
+    erroEnvio ? "protocolo_falha_envio" : "protocolo_enviado",
+    erroEnvio
+      ? `Protocolo nº ${protocolo.numero}: falha ao enviar e-mail para ${protocolo.destinatarioEmail} — ${erroEnvio}`
+      : `Protocolo nº ${protocolo.numero} enviado por e-mail a ${protocolo.destinatarioNome} (${protocolo.destinatarioEmail})`
+  );
+  return atualizado;
+}
+
+// ---------------------------------------------------------------------------
 // Rotas internas (analistas)
 // ---------------------------------------------------------------------------
 export const documentosEntregaRouter = Router();
 
 documentosEntregaRouter.use(autenticar);
+
+// Diz ao front quais canais disparam sozinhos (hoje só e-mail).
+documentosEntregaRouter.get("/envio/canais", (_req, res) => {
+  res.json({ email: emailConfigurado() });
+});
 
 documentosEntregaRouter.get("/obrigacoes/:id/documentos", asyncHandler(async (req, res) => {
   const obrigacao = await prisma.obrigacao.findUnique({
@@ -240,9 +283,11 @@ documentosEntregaRouter.delete("/documentos/:id", asyncHandler(async (req, res) 
 }));
 
 // Gera um protocolo por contato escolhido (e/ou um destinatário avulso).
+// Com `enviarEmail`, já dispara o e-mail para quem tem e-mail cadastrado.
 const protocolosSchema = z
   .object({
     contatoIds: z.array(z.string().uuid()).default([]),
+    enviarEmail: z.boolean().default(false),
     avulso: z
       .object({
         nome: z.string().trim().min(1),
@@ -307,7 +352,31 @@ documentosEntregaRouter.post("/obrigacoes/:id/protocolos", asyncHandler(async (r
     "protocolo_gerado",
     `Protocolo(s) ${criados.map((p) => `nº ${p.numero}`).join(", ")} para ${criados.map((p) => p.destinatarioNome).join(", ")}`
   );
+
+  if (parsed.data.enviarEmail && emailConfigurado()) {
+    for (const [i, p] of criados.entries()) {
+      if (p.destinatarioEmail) criados[i] = await dispararEmail(p.id, usuarioId);
+    }
+  }
   res.status(201).json(criados);
+}));
+
+// Envia (ou reenvia) um protocolo por e-mail.
+documentosEntregaRouter.post("/protocolos/:id/enviar-email", asyncHandler(async (req, res) => {
+  const existente = await prisma.protocoloEntrega.findUnique({ where: { id: req.params.id } });
+  if (!existente) {
+    res.status(404).json({ erro: "Protocolo não encontrado" });
+    return;
+  }
+  if (!existente.destinatarioEmail) {
+    res.status(400).json({ erro: "Este destinatário não tem e-mail cadastrado" });
+    return;
+  }
+  if (!emailConfigurado()) {
+    res.status(503).json({ erro: "Envio por e-mail não configurado no servidor (RESEND_API_KEY)" });
+    return;
+  }
+  res.json(await dispararEmail(existente.id, req.usuario?.usuarioId ?? null));
 }));
 
 // O analista confirma que mandou o link (WhatsApp/e-mail manual). Com a
