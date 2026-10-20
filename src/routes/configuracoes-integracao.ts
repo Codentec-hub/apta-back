@@ -64,6 +64,9 @@ configuracoesIntegracaoRouter.get("/configuracoes/evolution", asyncHandler(async
     apiKeyConfigurada: Boolean(config?.apiKey || process.env.EVOLUTION_API_KEY),
     apiKeyMascarada: mascarar(config?.apiKey ?? null),
     origem: config?.apiKey ? "banco" : process.env.EVOLUTION_API_KEY ? "ambiente" : "nenhuma",
+    // Endereço público do Manager, pro botão "abrir painel" — pode ser
+    // diferente de `url` (que costuma ser um endereço interno).
+    urlPainel: config?.urlPainel || null,
   });
 }));
 
@@ -71,6 +74,7 @@ const evolutionSchema = z.object({
   url: z.string().trim().url().optional(),
   apiKey: z.string().trim().min(1).optional(),
   instancia: z.string().trim().min(1).max(100).optional(),
+  urlPainel: z.string().trim().url().optional().or(z.literal("").transform(() => undefined)),
 });
 
 configuracoesIntegracaoRouter.put("/configuracoes/evolution", asyncHandler(async (req, res) => {

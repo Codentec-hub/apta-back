@@ -513,9 +513,14 @@ model ConfiguracaoGemini {
 // sobre EVOLUTION_API_URL/EVOLUTION_API_KEY/EVOLUTION_INSTANCE.
 model ConfiguracaoEvolution {
   id        Int      @id @default(1)
+  // Usada pelo backend pra chamar a API (pode ser um endereço interno, só
+  // alcançável de servidor pra servidor — ex.: rede do Docker/EasyPanel).
   url       String?
   apiKey    String?  @map("api_key")
   instancia String?
+  // Endereço público do Manager (/manager), pro botão "abrir painel" na
+  // tela. Costuma ser diferente de `url` quando ela é um endereço interno.
+  urlPainel String?  @map("url_painel")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("configuracao_evolution")
