@@ -7,6 +7,10 @@
 //   entregues/lidas sozinhas depois de alguns segundos, e a tela tem um botão
 //   para simular a chegada de mensagens de clientes. Serve para usar e
 //   demonstrar o atendimento antes de existir um número de verdade.
+// - "evolution": instância própria da Evolution API (self-hosted, WhatsApp
+//   não-oficial via multi-device). Precisa de EVOLUTION_API_URL,
+//   EVOLUTION_API_KEY e EVOLUTION_INSTANCE já conectada (QR Code escaneado
+//   no Manager). Texto livre sem limite de janela de 24h.
 
 export interface ResultadoEnvio {
   idExterno: string | null;
@@ -31,8 +35,41 @@ const simulador: ProvedorWhatsApp = {
   },
 };
 
+function configEvolution() {
+  const url = process.env.EVOLUTION_API_URL;
+  const apiKey = process.env.EVOLUTION_API_KEY;
+  const instance = process.env.EVOLUTION_INSTANCE;
+  if (!url || !apiKey || !instance) {
+    throw new Error("EVOLUTION_API_URL, EVOLUTION_API_KEY e EVOLUTION_INSTANCE precisam estar configurados");
+  }
+  return { url: url.replace(/\/+$/, ""), apiKey, instance };
+}
+
+const evolution: ProvedorWhatsApp = {
+  nome: "evolution",
+  simulador: false,
+  exigeJanela24h: false,
+  async enviarTexto(telefone, texto) {
+    const { url, apiKey, instance } = configEvolution();
+    const resposta = await fetch(`${url}/message/sendText/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: apiKey },
+      body: JSON.stringify({ number: telefone, text: texto }),
+    });
+    if (!resposta.ok) {
+      const corpo = await resposta.text().catch(() => "");
+      throw new Error(`Evolution API respondeu ${resposta.status}: ${corpo.slice(0, 300)}`);
+    }
+    const dados = (await resposta.json()) as { key?: { id?: string } };
+    return { idExterno: dados.key?.id ?? null };
+  },
+};
+
 export function provedorWhatsApp(): ProvedorWhatsApp {
   const nome = process.env.WHATSAPP_PROVEDOR ?? "simulador";
+  if (nome === "evolution") {
+    return evolution;
+  }
   if (nome !== "simulador") {
     console.warn(`[whatsapp] Provedor "${nome}" ainda não implementado; usando o simulador.`);
   }

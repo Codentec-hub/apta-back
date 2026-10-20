@@ -23,6 +23,7 @@ import { conversasRouter } from "./routes/conversas.js";
 import { agentesRouter } from "./routes/agentes.js";
 import { eventosRouter } from "./eventos.js";
 import { consultaCnpjRouter } from "./routes/consulta-cnpj.js";
+import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 
 const app = express();
 
@@ -33,6 +34,8 @@ app.use(healthRouter);
 // Link público do protocolo de entrega (sem login) — antes dos routers que
 // exigem autenticação para tudo que passa por eles.
 app.use(entregaPublicaRouter);
+// Webhook da Evolution API (sem login) — validado pelo token no caminho.
+app.use(whatsappWebhookRouter);
 // Tempo real (SSE): autentica pelo token na URL.
 app.use(eventosRouter);
 app.use(authRouter);
