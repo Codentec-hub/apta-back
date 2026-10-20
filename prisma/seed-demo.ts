@@ -9,6 +9,7 @@ import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import { configurarObrigacoes } from "./seed-obrigacoes.js";
 import { criarContatosDemo } from "./seed-contatos.js";
+import { criarConversasDemo } from "./seed-conversas.js";
 
 const prisma = new PrismaClient();
 
@@ -420,6 +421,9 @@ async function main() {
 
   await configurarObrigacoes(prisma);
 
+  console.log("Criando conversas de WhatsApp de demonstração...");
+  await criarConversasDemo(prisma);
+
   console.log("\nBase de demonstração criada com sucesso:");
   console.log(`  ${usuarios.length} usuários (senha padrão: apta1234)`);
   console.log(`  ${tipos.length} tipos de obrigação`);
@@ -427,6 +431,7 @@ async function main() {
   console.log(`  ${totalObrigacoes} obrigações`);
   console.log(`  25 demandas`);
   console.log(`  40 atendimentos`);
+  console.log(`  conversas de WhatsApp (simulador) em cada etapa do atendimento`);
   console.log(`  lançamentos financeiros dos últimos 3 meses`);
 }
 

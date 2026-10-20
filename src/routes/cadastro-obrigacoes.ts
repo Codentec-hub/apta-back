@@ -6,6 +6,8 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { gerarJanela, removerFuturasIntocadas } from "../obrigacoes/gerar-entregas.js";
+import { alocar, aplicarRegime } from "../obrigacoes/alocacao.js";
+import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
 import { prisma } from "../prisma.js";
 
 export const cadastroObrigacoesRouter = Router();
@@ -210,17 +212,6 @@ cadastroObrigacoesRouter.post("/clientes/:id/obrigacoes", asyncHandler(async (re
   res.json(await listarDaEmpresa(cliente.id));
 }));
 
-async function alocar(clienteId: string, tipoIds: string[]): Promise<void> {
-  await prisma.$transaction([
-    prisma.clienteObrigacao.updateMany({ where: { clienteId, tipoId: { in: tipoIds } }, data: { ativa: true } }),
-    prisma.clienteObrigacao.createMany({
-      data: tipoIds.map((tipoId) => ({ clienteId, tipoId })),
-      skipDuplicates: true,
-    }),
-  ]);
-  await gerarJanela({ clienteId });
-}
-
 // Aplicar regime: SUBSTITUI as obrigações da empresa pelas do regime — as
 // que não estão no regime ficam inativas (o histórico de entregas fica).
 cadastroObrigacoesRouter.post("/clientes/:id/aplicar-regime", asyncHandler(async (req, res) => {
@@ -238,22 +229,7 @@ cadastroObrigacoesRouter.post("/clientes/:id/aplicar-regime", asyncHandler(async
     res.status(404).json({ erro: "Cliente ou regime não encontrado" });
     return;
   }
-  const tipoIds = regime.obrigacoes.map((o) => o.tipoId);
-  const saindo = await prisma.clienteObrigacao.findMany({
-    where: { clienteId: cliente.id, ativa: true, tipoId: { notIn: tipoIds } },
-    select: { tipoId: true },
-  });
-  if (saindo.length > 0) {
-    await removerFuturasIntocadas({ clienteId: cliente.id, tipoId: { in: saindo.map((s) => s.tipoId) } });
-  }
-  await prisma.$transaction([
-    prisma.clienteObrigacao.updateMany({
-      where: { clienteId: cliente.id, tipoId: { notIn: tipoIds } },
-      data: { ativa: false },
-    }),
-    prisma.cliente.update({ where: { id: cliente.id }, data: { regimeTributario: regime.nome } }),
-  ]);
-  if (tipoIds.length > 0) await alocar(cliente.id, tipoIds);
+  await aplicarRegime(cliente.id, regime);
   res.json(await listarDaEmpresa(cliente.id));
 }));
 
@@ -295,19 +271,30 @@ cadastroObrigacoesRouter.put("/cliente-obrigacoes/:id", asyncHandler(async (req,
     res.status(404).json({ erro: "Obrigação da empresa não encontrada" });
     return;
   }
-  await prisma.clienteObrigacao.update({ where: { id: existente.id }, data: parsed.data });
+  await prisma.clienteObrigacao.update({
+    where: { id: existente.id },
+    data: { ...parsed.data, ...(parsed.data.ativa && !existente.ativa ? { geraDesde: new Date() } : {}) },
+  });
 
   // Inativar tira as pendências futuras intocadas; ativar gera as que faltam.
-  // Trocar o responsável vale para as pendências futuras ainda sem dono
-  // definido manualmente (as intocadas são refeitas).
+  // Trocar o responsável vale para as pendências ainda sem dono definido
+  // manualmente.
   const filtro = { clienteId: existente.clienteId, tipoId: existente.tipoId };
   if (parsed.data.ativa === false && existente.ativa) {
     await removerFuturasIntocadas(filtro);
   } else if (parsed.data.ativa === true && !existente.ativa) {
     await gerarJanela(filtro);
   } else if (parsed.data.responsavelId !== undefined && parsed.data.responsavelId !== existente.responsavelId) {
-    await removerFuturasIntocadas(filtro);
-    await gerarJanela(filtro);
+    const tipo = await prisma.tipoObrigacao.findUnique({ where: { id: existente.tipoId }, select: { setorId: true } });
+    const [vinculo, setor] = await Promise.all([
+      tipo
+        ? prisma.clienteResponsavel.findUnique({
+            where: { clienteId_setorId: { clienteId: existente.clienteId, setorId: tipo.setorId } },
+          })
+        : null,
+      tipo ? prisma.setor.findUnique({ where: { id: tipo.setorId }, select: { responsavelId: true } }) : null,
+    ]);
+    await redistribuirPendentes(filtro, [existente.responsavelId, vinculo?.usuarioId, setor?.responsavelId]);
   }
 
   const lista = await listarDaEmpresa(existente.clienteId);

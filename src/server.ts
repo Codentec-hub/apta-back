@@ -19,6 +19,10 @@ import { indicadoresRouter } from "./routes/indicadores.js";
 import { documentosEntregaRouter, entregaPublicaRouter } from "./routes/documentos-entrega.js";
 import { configuracaoEnvioRouter } from "./routes/configuracao-envio.js";
 import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
+import { conversasRouter } from "./routes/conversas.js";
+import { agentesRouter } from "./routes/agentes.js";
+import { eventosRouter } from "./eventos.js";
+import { consultaCnpjRouter } from "./routes/consulta-cnpj.js";
 
 const app = express();
 
@@ -29,6 +33,8 @@ app.use(healthRouter);
 // Link público do protocolo de entrega (sem login) — antes dos routers que
 // exigem autenticação para tudo que passa por eles.
 app.use(entregaPublicaRouter);
+// Tempo real (SSE): autentica pelo token na URL.
+app.use(eventosRouter);
 app.use(authRouter);
 app.use(usuariosRouter);
 app.use(setoresRouter);
@@ -43,6 +49,9 @@ app.use(feriadosRouter);
 app.use(indicadoresRouter);
 app.use(documentosEntregaRouter);
 app.use(configuracaoEnvioRouter);
+app.use(conversasRouter);
+app.use(agentesRouter);
+app.use(consultaCnpjRouter);
 
 // Rede de segurança: qualquer erro não tratado numa rota cai aqui em vez de
 // derrubar o processo (evita que um erro do Prisma, por exemplo, tire a API

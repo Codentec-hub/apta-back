@@ -302,6 +302,7 @@ const atualizarObrigacaoSchema = z.object({
   responsavelId: z.string().uuid().optional().nullable(),
   dispensada: z.boolean().optional(),
   tempoRealMinutos: z.coerce.number().int().min(0).optional().nullable(),
+  valorGuia: z.coerce.number().min(0).optional().nullable(),
 });
 
 obrigacoesRouter.put("/obrigacoes/:id", asyncHandler(async (req, res) => {
@@ -351,7 +352,19 @@ obrigacoesRouter.put("/obrigacoes/:id", asyncHandler(async (req, res) => {
   res.json(obrigacao);
 }));
 
+const registrarAtrasoSchema = z.object({
+  justificativa: z.string().min(1),
+  causaRaiz: z.string().min(1),
+  planoDeAcao: z.string().min(1),
+  prazoPrometido: z.coerce.date(),
+});
+
 const concluirObrigacaoSchema = z.object({
+  // Valor apurado da guia (opcional).
+  valorGuia: z.coerce.number().min(0).optional().nullable(),
+  // Obrigatório quando a entrega sai depois do prazo legal e ainda não há
+  // justificativa: o atraso não passa sem justificativa, causa raiz e plano.
+  atraso: registrarAtrasoSchema.optional().nullable(),
   tempoRealMinutos: z.coerce.number().int().min(0).optional().nullable(),
   // Data da entrega, quando registrada depois do fato (padrão: agora).
   entregueEm: z.coerce.date().optional().nullable(),
@@ -377,11 +390,30 @@ obrigacoesRouter.post("/obrigacoes/:id/concluir", asyncHandler(async (req, res) 
     return;
   }
 
+  const jaJustificada = await prisma.atraso.findUnique({ where: { obrigacaoId: existente.id } });
+  if (concluidaEm > existente.prazo && !jaJustificada) {
+    if (!parsed.data.atraso) {
+      res.status(422).json({
+        erro: "Entrega fora do prazo legal: informe a justificativa, a causa raiz e o plano de ação",
+        codigo: "JUSTIFICATIVA_OBRIGATORIA",
+      });
+      return;
+    }
+    await prisma.atraso.create({ data: { ...parsed.data.atraso, obrigacaoId: existente.id } });
+    await registrarLog(
+      existente.id,
+      req,
+      "justificativa",
+      `Entrega justificada — plano prometido para ${formatarData(parsed.data.atraso.prazoPrometido)}`
+    );
+  }
+
   const obrigacao = await prisma.obrigacao.update({
     where: { id: req.params.id },
     data: {
       concluidaEm,
       tempoRealMinutos: parsed.data.tempoRealMinutos,
+      ...(parsed.data.valorGuia !== undefined ? { valorGuia: parsed.data.valorGuia } : {}),
       entreguePorId: req.usuario?.usuarioId ?? null,
     },
     include: obrigacaoInclude,
@@ -421,13 +453,6 @@ obrigacoesRouter.delete("/obrigacoes/:id", asyncHandler(async (req, res) => {
   await prisma.obrigacao.delete({ where: { id: req.params.id } });
   res.status(204).send();
 }));
-
-const registrarAtrasoSchema = z.object({
-  justificativa: z.string().min(1),
-  causaRaiz: z.string().min(1),
-  planoDeAcao: z.string().min(1),
-  prazoPrometido: z.coerce.date(),
-});
 
 obrigacoesRouter.put("/obrigacoes/:id/atraso", asyncHandler(async (req, res) => {
   const parsed = registrarAtrasoSchema.safeParse(req.body);

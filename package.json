@@ -18,7 +18,8 @@
     "prisma:seed-demo": "tsx prisma/seed-demo.ts",
     "prisma:seed-obrigacoes": "tsx prisma/seed-obrigacoes.ts",
     "prisma:seed-feriados": "tsx prisma/seed-feriados.ts",
-    "prisma:seed-contatos": "tsx prisma/seed-contatos.ts"
+    "prisma:seed-contatos": "tsx prisma/seed-contatos.ts",
+    "prisma:seed-conversas": "tsx prisma/seed-conversas.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.1.0",

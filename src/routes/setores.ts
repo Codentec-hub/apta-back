@@ -3,6 +3,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
+import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
 
 export const setoresRouter = Router();
 
@@ -69,5 +70,8 @@ setoresRouter.put("/setores/:id", asyncHandler(async (req, res) => {
     data: parsed.data,
     include: { responsavel: { select: { id: true, nome: true } } },
   });
+  if (parsed.data.responsavelId !== undefined && parsed.data.responsavelId !== setorExistente.responsavelId) {
+    await redistribuirPendentes({ setorId: setor.id }, [setorExistente.responsavelId]);
+  }
   res.json(setor);
 }));

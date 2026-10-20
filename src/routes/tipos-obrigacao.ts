@@ -257,8 +257,8 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/:id/empresas", asyncHandler(async (r
   }
   await prisma.$transaction([
     prisma.clienteObrigacao.updateMany({
-      where: { tipoId: tipo.id, clienteId: { in: parsed.data.clienteIds } },
-      data: { ativa: true },
+      where: { tipoId: tipo.id, clienteId: { in: parsed.data.clienteIds }, ativa: false },
+      data: { ativa: true, geraDesde: new Date() },
     }),
     prisma.clienteObrigacao.createMany({
       data: parsed.data.clienteIds.map((clienteId) => ({ clienteId, tipoId: tipo.id })),

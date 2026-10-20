@@ -10,10 +10,24 @@ export const MESES_A_FRENTE = 12;
 
 export type FiltroGeracao = { clienteId?: string; tipoId?: string };
 
+// Início do dia (o vínculo feito hoje ainda gera o que vence hoje).
+function inicioDoDia(data: Date): Date {
+  const d = new Date(data);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 // Gera as entregas de um mês de entrega para todas as obrigações ativas das
 // empresas ativas. Idempotente: a unique (cliente, tipo, competência) impede
 // duplicar, então pode rodar quantas vezes for preciso.
-export async function gerarEntregasDoMes(ano: number, mes: number, filtro: FiltroGeracao = {}): Promise<number> {
+// Fora do "Retro", não gera entrega com prazo anterior ao vínculo da
+// obrigação na empresa (`geraDesde`): cliente novo não nasce com atrasos.
+export async function gerarEntregasDoMes(
+  ano: number,
+  mes: number,
+  filtro: FiltroGeracao = {},
+  opcoes: { incluirAnterioresAoVinculo?: boolean } = {}
+): Promise<number> {
   await garantirFeriados();
   const alocadas = await prisma.clienteObrigacao.findMany({
     where: {
@@ -33,6 +47,7 @@ export async function gerarEntregasDoMes(ano: number, mes: number, filtro: Filtr
   for (const a of alocadas) {
     const entrega = calcularEntrega(a.tipo, ano, mes, a.cliente);
     if (!entrega) continue;
+    if (!opcoes.incluirAnterioresAoVinculo && entrega.prazo < inicioDoDia(a.geraDesde)) continue;
     // Responsável pelo prazo: o da obrigação na empresa → o do departamento
     // no cadastro do cliente → o responsável padrão do departamento.
     const responsavelDoCliente = a.cliente.responsaveis.find((r) => r.setorId === a.tipo.setorId)?.usuarioId;
@@ -63,13 +78,13 @@ export async function gerarJanela(filtro: FiltroGeracao = {}): Promise<number> {
 }
 
 // Botão "Retro" do Acessórias: gera pendências retroativas desde um mês de
-// entrega passado até o mês anterior ao corrente.
+// entrega passado até o mês corrente (inclusive o que já venceu nele).
 export async function gerarRetroativas(desde: { ano: number; mes: number }, filtro: FiltroGeracao = {}): Promise<number> {
   const atual = mesAtual();
   let total = 0;
   let m = desde;
-  while (m.ano < atual.ano || (m.ano === atual.ano && m.mes < atual.mes)) {
-    total += await gerarEntregasDoMes(m.ano, m.mes, filtro);
+  while (m.ano < atual.ano || (m.ano === atual.ano && m.mes <= atual.mes)) {
+    total += await gerarEntregasDoMes(m.ano, m.mes, filtro, { incluirAnterioresAoVinculo: true });
     m = somarMeses(m.ano, m.mes, 1);
   }
   return total;

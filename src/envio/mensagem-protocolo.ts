@@ -13,6 +13,7 @@ export interface DadosMensagemProtocolo {
     competencia: Date | null;
     competenciaAnual: boolean;
     prazo: Date;
+    valorGuia?: number | null;
   };
   empresa: { razaoSocial: string };
   documentos: string[];
@@ -66,6 +67,9 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
   const detalhes = [
     competencia ? `Competência: ${competencia}` : null,
     `Vencimento: ${formatarData(d.obrigacao.prazo)}`,
+    d.obrigacao.valorGuia != null
+      ? `Valor: ${d.obrigacao.valorGuia.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`
+      : null,
     `Protocolo nº ${d.numero}`,
   ].filter((linha): linha is string => linha !== null);
 

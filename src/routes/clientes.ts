@@ -1,9 +1,12 @@
+import { Prisma } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { recalcularFuturas } from "../obrigacoes/gerar-entregas.js";
 import { prisma } from "../prisma.js";
+import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
+import { aoInativarCliente, aoReativarCliente, aplicarRegimePorNome } from "../obrigacoes/alocacao.js";
 
 export const clientesRouter = Router();
 
@@ -11,7 +14,7 @@ clientesRouter.use(autenticar);
 
 const clienteInclude = {
   responsaveis: {
-    include: { setor: true, usuario: true },
+    include: { setor: true, usuario: { select: { id: true, nome: true, email: true, perfil: true, ativo: true, setorId: true } } },
   },
   contatos: {
     where: { ativo: true },
@@ -34,6 +37,20 @@ const camposEmpresa = {
     .or(z.literal("").transform(() => null)),
   grupoEmpresas: z.string().trim().optional().nullable(),
   honorario: z.coerce.number().min(0).optional().nullable(),
+  dataAbertura: z.coerce.date().optional().nullable(),
+  situacaoCadastral: z.string().trim().optional().nullable(),
+  cnaePrincipal: z.string().trim().optional().nullable(),
+  cnaeDescricao: z.string().trim().optional().nullable(),
+  cnaesSecundarios: z
+    .array(z.object({ codigo: z.string(), descricao: z.string() }))
+    .optional()
+    .nullable(),
+  atividades: z.array(z.enum(["servicos", "comercio", "industria"])).optional(),
+  inscricaoEstadual: z.string().trim().optional().nullable(),
+  inscricaoMunicipal: z.string().trim().optional().nullable(),
+  notasEmitidas: z.array(z.enum(["nfse", "nfe", "nfce", "cte"])).optional(),
+  cep: z.string().trim().optional().nullable(),
+  endereco: z.string().trim().optional().nullable(),
 };
 
 clientesRouter.get("/clientes", asyncHandler(async (_req, res) => {
@@ -58,10 +75,21 @@ clientesRouter.get("/clientes/:id", asyncHandler(async (req, res) => {
   res.json(cliente);
 }));
 
+// CNPJ/CPF/CAEPF guardado só com dígitos (a tela formata); assim o mesmo
+// documento digitado com ou sem máscara não vira dois clientes.
+const documentoSchema = z
+  .string()
+  .transform((v) => v.replace(/\D/g, ""))
+  .refine((v) => v.length === 11 || v.length === 14, "Documento deve ter 11 (CPF) ou 14 dígitos (CNPJ/CAEPF)");
+
 const criarClienteSchema = z.object({
+  // Sócios vindos da consulta do CNPJ, cadastrados como contatos.
+  socios: z
+    .array(z.object({ nome: z.string().trim().min(1), cargo: z.string().trim().optional().nullable(), responsavelLegal: z.boolean().optional() }))
+    .optional(),
   razaoSocial: z.string().min(1),
   nomeFantasia: z.string().optional().nullable(),
-  cnpj: z.string().min(1),
+  cnpj: documentoSchema,
   regimeTributario: z.string().optional().nullable(),
   ...camposEmpresa,
 });
@@ -69,7 +97,8 @@ const criarClienteSchema = z.object({
 clientesRouter.post("/clientes", asyncHandler(async (req, res) => {
   const parsed = criarClienteSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ erro: "razaoSocial e cnpj são obrigatórios" });
+    const doc = parsed.error.flatten().fieldErrors.cnpj?.[0];
+    res.status(400).json({ erro: doc ?? "Razão social e CNPJ são obrigatórios" });
     return;
   }
 
@@ -79,17 +108,26 @@ clientesRouter.post("/clientes", asyncHandler(async (req, res) => {
     return;
   }
 
-  const cliente = await prisma.cliente.create({
-    data: parsed.data,
-    include: clienteInclude,
+  const { socios, cnaesSecundarios, ...dados } = parsed.data;
+  const criado = await prisma.cliente.create({
+    data: {
+      ...dados,
+      ...(cnaesSecundarios ? { cnaesSecundarios } : {}),
+      contatos: socios?.length
+        ? { create: socios.map((s) => ({ nome: s.nome, cargo: s.cargo ?? null, responsavelLegal: Boolean(s.responsavelLegal) })) }
+        : undefined,
+    },
   });
-  res.status(201).json(cliente);
+  // O regime escolhido já traz as obrigações dele (como "Aplicar regime").
+  const obrigacoesAplicadas = await aplicarRegimePorNome(criado.id, parsed.data.regimeTributario);
+  const cliente = await prisma.cliente.findUniqueOrThrow({ where: { id: criado.id }, include: clienteInclude });
+  res.status(201).json({ ...cliente, obrigacoesAplicadas });
 }));
 
 const atualizarClienteSchema = z.object({
   razaoSocial: z.string().min(1).optional(),
   nomeFantasia: z.string().optional().nullable(),
-  cnpj: z.string().min(1).optional(),
+  cnpj: documentoSchema.optional(),
   regimeTributario: z.string().optional().nullable(),
   ativo: z.boolean().optional(),
   ...camposEmpresa,
@@ -118,9 +156,13 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
     }
   }
 
+  const { cnaesSecundarios, ...dadosAtualizar } = parsed.data;
   const cliente = await prisma.cliente.update({
     where: { id: req.params.id },
-    data: parsed.data,
+    data: {
+      ...dadosAtualizar,
+      ...(cnaesSecundarios !== undefined ? { cnaesSecundarios: cnaesSecundarios ?? Prisma.DbNull } : {}),
+    },
     include: clienteInclude,
   });
 
@@ -132,7 +174,15 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
   ) {
     await recalcularFuturas({ clienteId: cliente.id });
   }
-  res.json(cliente);
+  if (parsed.data.ativo === false && clienteExistente.ativo) await aoInativarCliente(cliente.id);
+  if (parsed.data.ativo === true && !clienteExistente.ativo) await aoReativarCliente(cliente.id);
+
+  // Trocou de regime → as obrigações passam a ser as do novo regime.
+  let obrigacoesAplicadas: number | null = null;
+  if (parsed.data.regimeTributario && parsed.data.regimeTributario !== clienteExistente.regimeTributario) {
+    obrigacoesAplicadas = await aplicarRegimePorNome(cliente.id, parsed.data.regimeTributario);
+  }
+  res.json({ ...cliente, obrigacoesAplicadas });
 }));
 
 clientesRouter.delete("/clientes/:id", asyncHandler(async (req, res) => {
@@ -146,8 +196,18 @@ clientesRouter.delete("/clientes/:id", asyncHandler(async (req, res) => {
     where: { id: req.params.id },
     data: { ativo: false },
   });
+  if (clienteExistente.ativo) await aoInativarCliente(clienteExistente.id);
   res.status(204).send();
 }));
+
+// Quem as entregas pendentes do setor podiam ter antes da troca.
+async function anterioresDoSetor(clienteId: string, setorId: string): Promise<(string | null)[]> {
+  const [vinculo, setor] = await Promise.all([
+    prisma.clienteResponsavel.findUnique({ where: { clienteId_setorId: { clienteId, setorId } } }),
+    prisma.setor.findUnique({ where: { id: setorId }, select: { responsavelId: true } }),
+  ]);
+  return [vinculo?.usuarioId ?? null, setor?.responsavelId ?? null];
+}
 
 const responsavelSchema = z.object({
   usuarioId: z.string().uuid(),
@@ -160,6 +220,7 @@ clientesRouter.put("/clientes/:id/responsaveis/:setorId", asyncHandler(async (re
     return;
   }
 
+  const anterior = await anterioresDoSetor(req.params.id, req.params.setorId);
   const responsavel = await prisma.clienteResponsavel.upsert({
     where: {
       clienteId_setorId: { clienteId: req.params.id, setorId: req.params.setorId },
@@ -170,13 +231,15 @@ clientesRouter.put("/clientes/:id/responsaveis/:setorId", asyncHandler(async (re
       setorId: req.params.setorId,
       usuarioId: parsed.data.usuarioId,
     },
-    include: { setor: true, usuario: true },
+    include: { setor: true, usuario: { select: { id: true, nome: true, email: true, perfil: true, ativo: true, setorId: true } } },
   });
+  await redistribuirPendentes({ clienteId: req.params.id, setorId: req.params.setorId }, anterior);
 
   res.json(responsavel);
 }));
 
 clientesRouter.delete("/clientes/:id/responsaveis/:setorId", asyncHandler(async (req, res) => {
+  const anterior = await anterioresDoSetor(req.params.id, req.params.setorId);
   await prisma.clienteResponsavel
     .delete({
       where: {
@@ -184,6 +247,7 @@ clientesRouter.delete("/clientes/:id/responsaveis/:setorId", asyncHandler(async 
       },
     })
     .catch(() => null);
+  await redistribuirPendentes({ clienteId: req.params.id, setorId: req.params.setorId }, anterior);
 
   res.status(204).send();
 }));
@@ -195,6 +259,7 @@ const contatoSchema = z.object({
   celular: z.string().trim().optional().nullable(),
   email: z.string().trim().email().optional().nullable().or(z.literal("").transform(() => null)),
   recebeTodos: z.boolean().default(true),
+  responsavelLegal: z.boolean().default(false),
   setorIds: z.array(z.string().uuid()).default([]),
 });
 

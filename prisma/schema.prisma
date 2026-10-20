@@ -39,6 +39,7 @@ model Setor {
   contatos       ContatoCliente[]
   demandas       Demanda[]
   atendimentos   Atendimento[]
+  agentes        AgenteIA[]
 
   @@map("setores")
 }
@@ -66,6 +67,7 @@ model Usuario {
   logsObrigacao      LogObrigacao[]
   demandas           Demanda[]
   atendimentos       Atendimento[]
+  mensagens          Mensagem[]
 
   @@map("usuarios")
 }
@@ -88,12 +90,29 @@ model Cliente {
   grupoEmpresas String? @map("grupo_empresas")
   honorario     Float?
 
+  // Dados fiscais (preenchidos pela consulta do CNPJ e completados à mão).
+  dataAbertura       DateTime? @map("data_abertura") @db.Date
+  situacaoCadastral  String?   @map("situacao_cadastral") // na Receita: ATIVA, BAIXADA...
+  cnaePrincipal      String?   @map("cnae_principal") // "4721-1/02"
+  cnaeDescricao      String?   @map("cnae_descricao")
+  // [{ codigo, descricao }]
+  cnaesSecundarios   Json?     @map("cnaes_secundarios")
+  // "servicos" | "comercio" | "industria"
+  atividades         String[]  @default([])
+  inscricaoEstadual  String?   @map("inscricao_estadual")
+  inscricaoMunicipal String?   @map("inscricao_municipal")
+  // Notas que a empresa emite: "nfse" | "nfe" | "nfce" | "cte"
+  notasEmitidas      String[]  @default([]) @map("notas_emitidas")
+  cep                String?
+  endereco           String?
+
   responsaveis           ClienteResponsavel[]
   contatos               ContatoCliente[]
   obrigacoes             Obrigacao[]
   obrigacoesEmpresa      ClienteObrigacao[]
   demandas               Demanda[]
   atendimentos           Atendimento[]
+  conversas              Conversa[]
   lancamentosFinanceiros LancamentoFinanceiro[]
 
   @@map("clientes")
@@ -226,6 +245,10 @@ model ClienteObrigacao {
   id        String   @id @default(uuid())
   ativa     Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
+  // Entregas só são geradas com prazo a partir desta data (vincular ou
+  // reativar uma obrigação não cria atrasos do que já venceu; o passado
+  // entra pelo "Retro").
+  geraDesde DateTime @default(now()) @map("gera_desde")
 
   clienteId String  @map("cliente_id")
   cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
@@ -266,7 +289,9 @@ model Obrigacao {
   // Preenchido ao concluir, para medir produtividade real x tempo previsto
   // do TipoObrigacao (Fase 3.3 — o que o Emanuell chamou de "tempo médio
   // que utilizamos para fazer cada coisa").
-  tempoRealMinutos Int? @map("tempo_real_minutos")
+  tempoRealMinutos Int?   @map("tempo_real_minutos")
+  // Valor apurado da guia (DAS, DARF...), informado na entrega e enviado ao cliente.
+  valorGuia        Float? @map("valor_guia")
 
   // Obrigação que não se aplica a este cliente (ex.: imune/isento) — conta
   // à parte nos relatórios, não como pendência nem como atraso.
@@ -363,21 +388,24 @@ model ComentarioEntrega {
 // documentos de cada departamento (folha → pessoa X, impostos → pessoa Y,
 // ou todos recebem tudo).
 model ContatoCliente {
-  id          String   @id @default(uuid())
-  nome        String
-  cargo       String?
-  celular     String?
-  email       String?
+  id               String   @id @default(uuid())
+  nome             String
+  cargo            String?
+  celular          String?
+  email            String?
   // true = recebe de todos os departamentos; false = só dos `setores`.
-  recebeTodos Boolean  @default(true) @map("recebe_todos")
-  ativo       Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at")
+  recebeTodos      Boolean  @default(true) @map("recebe_todos")
+  // Responsável legal da empresa perante a Receita (sócio-administrador).
+  responsavelLegal Boolean  @default(false) @map("responsavel_legal")
+  ativo            Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
 
   clienteId String  @map("cliente_id")
   cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   setores   Setor[]
 
   protocolos ProtocoloEntrega[]
+  conversas  Conversa[]
 
   @@index([clienteId])
   @@map("contatos_cliente")
@@ -448,6 +476,7 @@ model ProtocoloEntrega {
   usuario     Usuario?        @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
 
   alertasNaoLida AlertaNaoLida[]
+  mensagens      Mensagem[]
 
   @@index([obrigacaoId])
   @@map("protocolos_entrega")
@@ -512,18 +541,20 @@ model Demanda {
 }
 
 enum StatusAtendimento {
+  TRIAGEM // chegou pelo WhatsApp e ainda não tem setor (ou cliente) definido
   AGUARDANDO
   EM_ATENDIMENTO
   FINALIZADO
 }
 
-// Fila de atendimento ao cliente — Fase 3.5, o painel interno (fila de
-// espera / em atendimento / finalizado) antes de integrar ou substituir o
-// Suri. O responsável é sugerido automaticamente a partir do
-// ClienteResponsavel do setor, mas pode ser trocado manualmente.
+// Fila de atendimento ao cliente — Fase 3.5. Cada atendimento é uma "sessão"
+// (abertura → finalização com motivo). Pelo WhatsApp, pertence a uma
+// Conversa; sem conversa, é um registro manual (telefone, presencial). O
+// responsável é sugerido automaticamente a partir do ClienteResponsavel do
+// setor, mas pode ser trocado manualmente.
 model Atendimento {
   id          String            @id @default(uuid())
-  motivo      String
+  motivo      String? // assunto em texto livre
   observacoes String?
   status      StatusAtendimento @default(AGUARDANDO)
 
@@ -531,16 +562,150 @@ model Atendimento {
   iniciadoEm   DateTime? @map("iniciado_em")
   finalizadoEm DateTime? @map("finalizado_em")
 
-  clienteId String  @map("cliente_id")
-  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  // Nulos só na triagem de um número que ainda não foi vinculado a um
+  // cliente/setor.
+  clienteId String?  @map("cliente_id")
+  cliente   Cliente? @relation(fields: [clienteId], references: [id], onDelete: Cascade)
 
-  setorId String @map("setor_id")
-  setor   Setor  @relation(fields: [setorId], references: [id])
+  setorId String? @map("setor_id")
+  setor   Setor?  @relation(fields: [setorId], references: [id])
 
   responsavelId String?  @map("responsavel_id")
   responsavel   Usuario? @relation(fields: [responsavelId], references: [id])
 
+  // Motivo categorizado, escolhido ao finalizar (relatório "principais motivos").
+  motivoId        String?            @map("motivo_id")
+  motivoCategoria MotivoAtendimento? @relation(fields: [motivoId], references: [id], onDelete: SetNull)
+
+  conversaId String?   @map("conversa_id")
+  conversa   Conversa? @relation(fields: [conversaId], references: [id], onDelete: Cascade)
+
+  @@index([conversaId])
   @@map("atendimentos")
+}
+
+model MotivoAtendimento {
+  id    String  @id @default(uuid())
+  nome  String  @unique
+  ativo Boolean @default(true)
+
+  atendimentos Atendimento[]
+
+  @@map("motivos_atendimento")
+}
+
+enum ModoConversa {
+  HUMANO
+  AGENTE // um AgenteIA responde o cliente
+}
+
+enum AutorMensagem {
+  CLIENTE
+  ATENDENTE
+  AGENTE
+  AUTOMACAO // envios automáticos (guias, lembretes, mensagens recorrentes)
+  SISTEMA // registros do próprio sistema (transferências, troca de modo)
+}
+
+enum TipoMensagem {
+  TEXTO
+  DOCUMENTO
+  IMAGEM
+  AUDIO
+}
+
+enum StatusMensagem {
+  RECEBIDA // mensagem do cliente
+  PENDENTE
+  ENVIADA
+  ENTREGUE
+  LIDA
+  FALHA
+}
+
+// Agentes de IA ("Agente Apta"): cada um com sua especialidade (contador,
+// financeiro...) e suas instruções. A conversa em modo AGENTE é respondida
+// pelo agente escolhido até um humano assumir.
+model AgenteIA {
+  id         String   @id @default(uuid())
+  nome       String   @unique
+  descricao  String?
+  instrucoes String   @default("")
+  ativo      Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  setorId String? @map("setor_id")
+  setor   Setor?  @relation(fields: [setorId], references: [id], onDelete: SetNull)
+
+  conversas Conversa[]
+  mensagens Mensagem[]
+
+  @@map("agentes_ia")
+}
+
+// Uma conversa por número de WhatsApp. O número é ligado a um contato da
+// empresa (ContatoCliente.celular) quando reconhecido; senão, fica "não
+// identificado" até alguém vincular na triagem. Atendimentos registrados à
+// mão (telefone, presencial...) também são conversas, sem telefone: o
+// histórico fica como registros da equipe.
+model Conversa {
+  id                  String       @id @default(uuid())
+  // Só dígitos, com DDI (5585...). Nulo nos atendimentos registrados à mão.
+  telefone            String?      @unique
+  nomeExibicao        String?      @map("nome_exibicao") // nome do perfil no WhatsApp
+  // "whatsapp" = conversa pelo sistema. Os demais são atendimentos
+  // registrados à mão: "telefone", "presencial", "email", "whatsapp_externo"
+  // (WhatsApp atendido fora do sistema, ex.: Suri), "outro".
+  canal               String       @default("whatsapp")
+  modo                ModoConversa @default(HUMANO)
+  naoLidas            Int          @default(0) @map("nao_lidas")
+  ultimaMensagemEm    DateTime?    @map("ultima_mensagem_em")
+  ultimaMensagemTexto String?      @map("ultima_mensagem_texto")
+  // Última mensagem do cliente: a API oficial só permite texto livre até
+  // 24h depois dela (fora disso, só modelos aprovados).
+  ultimaEntradaEm     DateTime?    @map("ultima_entrada_em")
+  createdAt           DateTime     @default(now()) @map("created_at")
+
+  clienteId String?         @map("cliente_id")
+  cliente   Cliente?        @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+  contatoId String?         @map("contato_id")
+  contato   ContatoCliente? @relation(fields: [contatoId], references: [id], onDelete: SetNull)
+  agenteId  String?         @map("agente_id")
+  agente    AgenteIA?       @relation(fields: [agenteId], references: [id], onDelete: SetNull)
+
+  mensagens    Mensagem[]
+  atendimentos Atendimento[]
+
+  @@index([ultimaMensagemEm])
+  @@map("conversas")
+}
+
+model Mensagem {
+  id             String         @id @default(uuid())
+  autor          AutorMensagem
+  tipo           TipoMensagem   @default(TEXTO)
+  texto          String?
+  // Nota interna: só a equipe vê, nunca vai para o cliente.
+  interna        Boolean        @default(false)
+  status         StatusMensagem @default(PENDENTE)
+  erro           String?
+  idExterno      String?        @unique @map("id_externo") // id da mensagem no provedor
+  arquivoNome    String?        @map("arquivo_nome")
+  arquivoCaminho String?        @map("arquivo_caminho")
+  mimeType       String?        @map("mime_type")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  conversaId  String            @map("conversa_id")
+  conversa    Conversa          @relation(fields: [conversaId], references: [id], onDelete: Cascade)
+  usuarioId   String?           @map("usuario_id")
+  usuario     Usuario?          @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+  agenteId    String?           @map("agente_id")
+  agente      AgenteIA?         @relation(fields: [agenteId], references: [id], onDelete: SetNull)
+  protocoloId String?           @map("protocolo_id")
+  protocolo   ProtocoloEntrega? @relation(fields: [protocoloId], references: [id], onDelete: SetNull)
+
+  @@index([conversaId, createdAt])
+  @@map("mensagens")
 }
 
 enum TipoLancamento {
