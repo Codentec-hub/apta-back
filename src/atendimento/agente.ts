@@ -10,8 +10,19 @@ import { enviarMensagem, registrarSistema } from "./conversas.js";
 // mandado pro Gemini a cada resposta.
 const HISTORICO_MAX = 20;
 
-export function motorAgenteConfigurado(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY);
+// Config do banco (tela "Agentes e IA") tem prioridade; GEMINI_API_KEY/
+// GEMINI_MODEL no ambiente servem de valor padrão enquanto ninguém configurar
+// pela tela.
+async function configGemini() {
+  const config = await prisma.configuracaoGemini.findUnique({ where: { id: 1 } });
+  return {
+    apiKey: config?.apiKey || process.env.GEMINI_API_KEY || null,
+    modelo: config?.modelo || process.env.GEMINI_MODEL || "gemini-flash-latest",
+  };
+}
+
+export async function motorAgenteConfigurado(): Promise<boolean> {
+  return Boolean((await configGemini()).apiKey);
 }
 
 interface ConteudoGemini {
@@ -20,11 +31,10 @@ interface ConteudoGemini {
 }
 
 async function chamarGemini(instrucoes: string, historico: ConteudoGemini[]): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const { apiKey, modelo } = await configGemini();
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY não configurada");
+    throw new Error("Gemini não configurado (tela Agentes e IA ou GEMINI_API_KEY)");
   }
-  const modelo = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
   const resposta = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${apiKey}`,
     {
@@ -60,7 +70,7 @@ async function voltarParaHumano(conversaId: string, motivo: string) {
 }
 
 export async function acionarAgente(conversaId: string): Promise<void> {
-  if (!motorAgenteConfigurado()) {
+  if (!(await motorAgenteConfigurado())) {
     console.log(`[agente] Conversa ${conversaId} em modo agente, mas o motor ainda não está configurado.`);
     return;
   }

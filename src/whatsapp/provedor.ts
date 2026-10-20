@@ -11,6 +11,7 @@
 //   não-oficial via multi-device). Precisa de EVOLUTION_API_URL,
 //   EVOLUTION_API_KEY e EVOLUTION_INSTANCE já conectada (QR Code escaneado
 //   no Manager). Texto livre sem limite de janela de 24h.
+import { prisma } from "../prisma.js";
 
 export interface ResultadoEnvio {
   idExterno: string | null;
@@ -35,12 +36,16 @@ const simulador: ProvedorWhatsApp = {
   },
 };
 
-function configEvolution() {
-  const url = process.env.EVOLUTION_API_URL;
-  const apiKey = process.env.EVOLUTION_API_KEY;
-  const instance = process.env.EVOLUTION_INSTANCE;
+// Config do banco (tela "Agentes e IA") tem prioridade; EVOLUTION_API_URL/
+// EVOLUTION_API_KEY/EVOLUTION_INSTANCE no ambiente servem de valor padrão
+// enquanto ninguém configurar pela tela.
+async function configEvolution() {
+  const config = await prisma.configuracaoEvolution.findUnique({ where: { id: 1 } });
+  const url = config?.url || process.env.EVOLUTION_API_URL;
+  const apiKey = config?.apiKey || process.env.EVOLUTION_API_KEY;
+  const instance = config?.instancia || process.env.EVOLUTION_INSTANCE;
   if (!url || !apiKey || !instance) {
-    throw new Error("EVOLUTION_API_URL, EVOLUTION_API_KEY e EVOLUTION_INSTANCE precisam estar configurados");
+    throw new Error("Evolution API não configurada (tela Agentes e IA ou EVOLUTION_API_URL/EVOLUTION_API_KEY/EVOLUTION_INSTANCE)");
   }
   return { url: url.replace(/\/+$/, ""), apiKey, instance };
 }
@@ -50,7 +55,7 @@ const evolution: ProvedorWhatsApp = {
   simulador: false,
   exigeJanela24h: false,
   async enviarTexto(telefone, texto) {
-    const { url, apiKey, instance } = configEvolution();
+    const { url, apiKey, instance } = await configEvolution();
     const resposta = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: apiKey },

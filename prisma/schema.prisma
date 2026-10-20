@@ -497,6 +497,30 @@ model ConfiguracaoEnvio {
   @@map("configuracao_envio")
 }
 
+// Configuração do motor do Agente Apta (Gemini). Tem prioridade sobre as
+// variáveis de ambiente GEMINI_API_KEY/GEMINI_MODEL — se não houver linha
+// aqui (ou os campos estiverem vazios), o sistema usa o ambiente.
+model ConfiguracaoGemini {
+  id        Int      @id @default(1)
+  apiKey    String?  @map("api_key")
+  modelo    String?
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("configuracao_gemini")
+}
+
+// Configuração da instância da Evolution API (WhatsApp). Mesma prioridade
+// sobre EVOLUTION_API_URL/EVOLUTION_API_KEY/EVOLUTION_INSTANCE.
+model ConfiguracaoEvolution {
+  id        Int      @id @default(1)
+  url       String?
+  apiKey    String?  @map("api_key")
+  instancia String?
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("configuracao_evolution")
+}
+
 // Lembrete de guia não lida já disparado (um por protocolo e por "dias
 // antes"), para não repetir o mesmo aviso.
 model AlertaNaoLida {

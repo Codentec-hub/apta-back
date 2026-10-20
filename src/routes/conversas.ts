@@ -557,15 +557,15 @@ conversasRouter.post("/conversas/:id/finalizar", asyncHandler(async (req, res) =
   res.status(204).send();
 }));
 
-conversasRouter.get("/whatsapp/status", (_req, res) => {
+conversasRouter.get("/whatsapp/status", asyncHandler(async (_req, res) => {
   const provedor = provedorWhatsApp();
   res.json({
     provedor: provedor.nome,
     simulador: provedor.simulador,
     exigeJanela24h: provedor.exigeJanela24h,
-    agenteConfigurado: motorAgenteConfigurado(),
+    agenteConfigurado: await motorAgenteConfigurado(),
   });
-});
+}));
 
 const simularSchema = z.object({
   telefone: z.string().refine(telefoneValido, "Telefone inválido (informe com DDD)"),
