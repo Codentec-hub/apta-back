@@ -406,6 +406,27 @@ conversasRouter.put("/conversas/:id/vincular", asyncHandler(async (req, res) => 
   res.status(204).send();
 }));
 
+// Desfaz o vínculo com cliente/contato (ex.: vínculo de teste, ou cadastro
+// que mudou e a conversa não deve mais apontar pro antigo). O telefone em si
+// nunca muda — é a identidade real do canal.
+conversasRouter.put("/conversas/:id/desvincular", asyncHandler(async (req, res) => {
+  const conversa = await buscarConversa(res, req.params.id);
+  if (!conversa) return;
+  if (!conversa.clienteId && !conversa.contatoId) {
+    res.status(204).send();
+    return;
+  }
+  const nomeAnterior = conversa.clienteId
+    ? (await prisma.cliente.findUnique({ where: { id: conversa.clienteId }, select: { razaoSocial: true } }))?.razaoSocial
+    : null;
+  await prisma.conversa.update({ where: { id: conversa.id }, data: { clienteId: null, contatoId: null } });
+  await registrarSistema(
+    conversa.id,
+    `Número desvinculado${nomeAnterior ? ` de ${nomeAnterior}` : ""} por ${await nomeDoUsuario(req)}`
+  );
+  res.status(204).send();
+}));
+
 const encaminharSchema = z.object({
   setorId: z.string().uuid(),
   responsavelId: z.string().uuid().optional().nullable(),
