@@ -12,6 +12,14 @@ export const clientesRouter = Router();
 
 clientesRouter.use(autenticar);
 
+// Desvincula as conversas do Atendimento de um cliente/contato inativado:
+// o telefone em si continua existindo na conversa (é o histórico real de
+// quem conversou), mas nome e vínculo de cadastro somem, em vez de seguir
+// mostrando um cadastro que já foi corrigido/removido.
+async function desvincularConversas(where: { clienteId?: string; contatoId?: string }): Promise<void> {
+  await prisma.conversa.updateMany({ where, data: { clienteId: null, contatoId: null } });
+}
+
 const clienteInclude = {
   responsaveis: {
     include: { setor: true, usuario: { select: { id: true, nome: true, email: true, perfil: true, ativo: true, setorId: true } } },
@@ -174,7 +182,10 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
   ) {
     await recalcularFuturas({ clienteId: cliente.id });
   }
-  if (parsed.data.ativo === false && clienteExistente.ativo) await aoInativarCliente(cliente.id);
+  if (parsed.data.ativo === false && clienteExistente.ativo) {
+    await aoInativarCliente(cliente.id);
+    await desvincularConversas({ clienteId: cliente.id });
+  }
   if (parsed.data.ativo === true && !clienteExistente.ativo) await aoReativarCliente(cliente.id);
 
   // Trocou de regime → as obrigações passam a ser as do novo regime.
@@ -196,7 +207,10 @@ clientesRouter.delete("/clientes/:id", asyncHandler(async (req, res) => {
     where: { id: req.params.id },
     data: { ativo: false },
   });
-  if (clienteExistente.ativo) await aoInativarCliente(clienteExistente.id);
+  if (clienteExistente.ativo) {
+    await aoInativarCliente(clienteExistente.id);
+    await desvincularConversas({ clienteId: clienteExistente.id });
+  }
   res.status(204).send();
 }));
 
@@ -328,5 +342,6 @@ clientesRouter.delete("/contatos/:id", asyncHandler(async (req, res) => {
     return;
   }
   await prisma.contatoCliente.update({ where: { id: req.params.id }, data: { ativo: false } });
+  await desvincularConversas({ contatoId: req.params.id });
   res.status(204).send();
 }));
