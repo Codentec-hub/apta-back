@@ -34,7 +34,7 @@ interface ParteGemini {
 }
 
 interface ConteudoGemini {
-  role: "user" | "model" | "function";
+  role: "user" | "model";
   parts: ParteGemini[];
 }
 
@@ -145,7 +145,7 @@ async function chamarGemini(
       contents.push({ role: "model", parts });
       const resultado = await buscarDeclaracaoParaEnvio(opcoes.clienteId);
       contents.push({
-        role: "function",
+        role: "user",
         parts: [{ functionResponse: { name: "enviar_declaracao", response: resultado } }],
       });
       continue;
