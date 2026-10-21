@@ -63,6 +63,34 @@ async function chamarGemini(instrucoes: string, historico: ConteudoGemini[]): Pr
   return texto;
 }
 
+// O Gemini às vezes responde 503 ("sobrecarregado") por alguns segundos só —
+// antes de devolver a conversa pro humano, vale tentar de novo um punhado de
+// vezes, com uma pausa curta entre elas.
+const TENTATIVAS_GEMINI = 4;
+const PAUSA_ENTRE_TENTATIVAS_MS = 4_000;
+
+function aguardar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function chamarGeminiComRetentativas(instrucoes: string, historico: ConteudoGemini[]): Promise<string> {
+  let ultimoErro: unknown;
+  for (let tentativa = 1; tentativa <= TENTATIVAS_GEMINI; tentativa++) {
+    try {
+      return await chamarGemini(instrucoes, historico);
+    } catch (error) {
+      ultimoErro = error;
+      console.warn(
+        `[agente] Tentativa ${tentativa}/${TENTATIVAS_GEMINI} falhou: ${error instanceof Error ? error.message : String(error)}`
+      );
+      if (tentativa < TENTATIVAS_GEMINI) {
+        await aguardar(PAUSA_ENTRE_TENTATIVAS_MS);
+      }
+    }
+  }
+  throw ultimoErro;
+}
+
 async function voltarParaHumano(conversaId: string, motivo: string) {
   console.error(`[agente] Conversa ${conversaId}: ${motivo}`);
   await registrarSistema(conversaId, "O agente de IA não conseguiu responder agora; a conversa voltou para atendimento humano.");
@@ -101,7 +129,7 @@ export async function acionarAgente(conversaId: string): Promise<void> {
   }
 
   try {
-    const resposta = await chamarGemini(conversa.agente.instrucoes, historico);
+    const resposta = await chamarGeminiComRetentativas(conversa.agente.instrucoes, historico);
     await enviarMensagem({ conversaId, texto: resposta, autor: "AGENTE", agenteId: conversa.agente.id });
   } catch (error) {
     await voltarParaHumano(conversaId, error instanceof Error ? error.message : String(error));
