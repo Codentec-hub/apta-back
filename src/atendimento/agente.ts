@@ -219,12 +219,15 @@ export async function acionarAgente(conversaId: string): Promise<void> {
     return;
   }
 
-  const mensagens = await prisma.mensagem.findMany({
+  // "desc" + take pra pegar as HISTORICO_MAX mais RECENTES (não as mais
+  // antigas); depois reverte pra ordem cronológica que a API espera.
+  const mensagensRecentes = await prisma.mensagem.findMany({
     where: { conversaId, interna: false, autor: { in: ["CLIENTE", "AGENTE", "ATENDENTE"] } },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: HISTORICO_MAX,
     select: { autor: true, texto: true },
   });
+  const mensagens = mensagensRecentes.reverse();
   const historico: ConteudoGemini[] = mensagens
     .filter((mensagem) => mensagem.texto)
     .map((mensagem) => ({
