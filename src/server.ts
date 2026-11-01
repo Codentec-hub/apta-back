@@ -20,6 +20,7 @@ import { documentosEntregaRouter, entregaPublicaRouter } from "./routes/document
 import { configuracaoEnvioRouter } from "./routes/configuracao-envio.js";
 import { configuracoesIntegracaoRouter } from "./routes/configuracoes-integracao.js";
 import { configuracoesSiegRouter } from "./routes/configuracoes-sieg.js";
+import { siegOauthRouter } from "./routes/sieg-oauth.js";
 import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
 import { conversasRouter } from "./routes/conversas.js";
 import { agentesRouter } from "./routes/agentes.js";
@@ -38,6 +39,9 @@ app.use(healthRouter);
 app.use(entregaPublicaRouter);
 // Webhook da Evolution API (sem login) — validado pelo token no caminho.
 app.use(whatsappWebhookRouter);
+// Onboarding OAuth do SIEG: /autorizar exige login (middleware próprio),
+// /callback é público — o navegador chega aqui direto do SIEG.
+app.use(siegOauthRouter);
 // Tempo real (SSE): autentica pelo token na URL.
 app.use(eventosRouter);
 app.use(authRouter);
