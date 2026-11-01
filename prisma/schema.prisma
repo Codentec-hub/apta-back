@@ -526,6 +526,18 @@ model ConfiguracaoEvolution {
   @@map("configuracao_evolution")
 }
 
+// Credenciais do sistema (Apta) emitidas pelo SIEG no cadastro como
+// integrador. Tem prioridade sobre SIEG_CLIENT_ID/SIEG_SECRET_KEY do
+// ambiente, igual ao padrão de ConfiguracaoGemini/ConfiguracaoEvolution.
+model ConfiguracaoSieg {
+  id        Int      @id @default(1)
+  clientId  String?  @map("client_id")
+  secretKey String?  @map("secret_key")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("configuracao_sieg")
+}
+
 // Lembrete de guia não lida já disparado (um por protocolo e por "dias
 // antes"), para não repetir o mesmo aviso.
 model AlertaNaoLida {
