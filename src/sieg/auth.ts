@@ -32,6 +32,12 @@ export async function credenciaisConfiguradas(): Promise<boolean> {
   return (await obterCredenciais()) !== null;
 }
 
+// Usado pela Fase B (src/sieg/oauth.ts) pra montar a URL de autorização sem
+// duplicar a regra de precedência banco/ambiente de `obterCredenciais`.
+export async function obterClientId(): Promise<string | null> {
+  return (await obterCredenciais())?.clientId ?? null;
+}
+
 async function buscarNovoToken(): Promise<string> {
   const credenciais = await obterCredenciais();
   if (!credenciais) {

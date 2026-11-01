@@ -17,12 +17,17 @@ const MARGEM_RENOVACAO_MS = 24 * 60 * 60 * 1000;
 export type NivelAcesso = "read" | "write" | "fullAccess";
 
 // Único fluxo de autorização por vez (ação manual e rara) -- guarda o state
-// gerado até o callback chegar, pra validar contra CSRF.
-let stateEmAndamento: string | null = null;
-
-export function gerarState(): string {
-  stateEmAndamento = crypto.randomUUID();
-  return stateEmAndamento;
+// gerado em `ConfiguracaoSieg` (não em memória) até o callback chegar, pra
+// sobreviver a um restart/redeploy entre o redirect pro SIEG e a volta do
+// usuário, e pra validar contra CSRF.
+export async function gerarState(): Promise<string> {
+  const state = crypto.randomUUID();
+  await prisma.configuracaoSieg.upsert({
+    where: { id: 1 },
+    create: { id: 1, oauthState: state },
+    update: { oauthState: state },
+  });
+  return state;
 }
 
 export function montarUrlAutorizacao(clientId: string, state: string, accessLevel: NivelAcesso): string {
@@ -32,14 +37,15 @@ export function montarUrlAutorizacao(clientId: string, state: string, accessLeve
 
 // "em-andamento" = aceita; "sem-fluxo" = não havia autorização iniciada;
 // "state-invalido" = state não bate com o gerado.
-export function validarState(state: string | undefined): "em-andamento" | "sem-fluxo" | "state-invalido" {
-  if (!stateEmAndamento) return "sem-fluxo";
-  if (state !== stateEmAndamento) return "state-invalido";
+export async function validarState(state: string | undefined): Promise<"em-andamento" | "sem-fluxo" | "state-invalido"> {
+  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
+  if (!config?.oauthState) return "sem-fluxo";
+  if (state !== config.oauthState) return "state-invalido";
   return "em-andamento";
 }
 
-export function limparState(): void {
-  stateEmAndamento = null;
+export async function limparState(): Promise<void> {
+  await prisma.configuracaoSieg.update({ where: { id: 1 }, data: { oauthState: null } });
 }
 
 export async function trocarTokenTemporario(tokenTemporario: string): Promise<void> {

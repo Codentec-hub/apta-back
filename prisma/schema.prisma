@@ -538,6 +538,10 @@ model ConfiguracaoSieg {
   // seletor de empresa, só a conta logada).
   oauthToken    String?   @map("oauth_token")
   oauthExpiraEm DateTime? @map("oauth_expira_em")
+  // State do fluxo de autorização em andamento (Fase B) -- em banco, não em
+  // memória, pra sobreviver a um restart/redeploy entre o redirect pro SIEG
+  // e o usuário voltar pro callback (achado da revisão de código).
+  oauthState    String?   @map("oauth_state")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
   @@map("configuracao_sieg")

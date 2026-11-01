@@ -5,8 +5,7 @@ import type { Request } from "express";
 import { Router } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
-import { prisma } from "../prisma.js";
-import { credenciaisConfiguradas } from "../sieg/auth.js";
+import { credenciaisConfiguradas, obterClientId } from "../sieg/auth.js";
 import { gerarState, limparState, montarUrlAutorizacao, trocarTokenTemporario, validarState } from "../sieg/oauth.js";
 
 export const siegOauthRouter = Router();
@@ -28,13 +27,12 @@ siegOauthRouter.get("/sieg/oauth/autorizar", autenticar, asyncHandler(async (req
     res.status(400).json({ erro: "Configure client_id e secret_key em Configurações > Integrações antes de autorizar" });
     return;
   }
-  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
-  const clientId = config?.clientId || process.env.SIEG_CLIENT_ID;
+  const clientId = await obterClientId();
   if (!clientId) {
     res.status(400).json({ erro: "client_id do SIEG não configurado" });
     return;
   }
-  const state = gerarState();
+  const state = await gerarState();
   res.redirect(montarUrlAutorizacao(clientId, state, "read"));
 }));
 
@@ -42,7 +40,7 @@ siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
   const state = typeof req.query.state === "string" ? req.query.state : undefined;
   const tokenTemporario = typeof req.query.token === "string" ? req.query.token : undefined;
 
-  const validacao = validarState(state);
+  const validacao = await validarState(state);
   if (validacao === "sem-fluxo") {
     res.status(200).send(paginaResultado("Autorização já concluída ou não iniciada por aqui. Pode fechar esta aba."));
     return;
@@ -58,7 +56,7 @@ siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
 
   try {
     await trocarTokenTemporario(tokenTemporario);
-    limparState();
+    await limparState();
     res.status(200).send(paginaResultado("Autorização concluída com sucesso! Pode fechar esta aba."));
   } catch (error) {
     res.status(502).send(paginaResultado(`Falha ao concluir a autorização: ${error instanceof Error ? error.message : String(error)}`));
