@@ -8,7 +8,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
-import { credenciaisConfiguradas, obterTokenSistema } from "../sieg/auth.js";
+import { credenciaisConfiguradas, invalidarCache, obterTokenSistema } from "../sieg/auth.js";
 
 export const configuracoesSiegRouter = Router();
 
@@ -54,6 +54,7 @@ configuracoesSiegRouter.put("/configuracoes/sieg", asyncHandler(async (req, res)
     create: { id: 1, ...parsed.data },
     update: parsed.data,
   });
+  invalidarCache();
   res.status(204).send();
 }));
 

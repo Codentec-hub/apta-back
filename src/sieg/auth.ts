@@ -76,3 +76,11 @@ export async function obterTokenSistema(): Promise<string> {
   });
   return emAndamento;
 }
+
+// Chamado pela rota de configuração ao salvar client_id/secret_key novos —
+// sem isso, um token obtido com a credencial antiga continuaria valendo por
+// até ~23h depois da troca, e /configuracoes/sieg/status reportaria "ok"
+// testando o token em cache em vez da credencial recém-salva.
+export function invalidarCache(): void {
+  cache = null;
+}
