@@ -8,11 +8,16 @@ import { obterCredenciais } from "./auth.js";
 const URL_AUTORIZACAO = "https://app.sieg.com/AuthorizeAccess.aspx";
 // Confirmado na página "Demonstração" (Swagger) da doc oficial.
 const URL_GENERATE_TOKEN = "https://api.sieg.com/api/v1/oauth/generate-token";
-// URL cadastrada no formulário de "Sistema Externo" -- ainda não confirmada
-// pelo suporte do SIEG (mensagem enviada, sem resposta). Enviada de volta
-// pro SIEG em todo generate-token (campo RedirectUri); a Task 4 confirma se
-// bate com o que está cadastrado do lado deles.
-const URL_CALLBACK = "https://api.contabilidadeapta.com.br/sieg/oauth/callback";
+// Confirmado em teste real (02/11/2026): o SIEG recusa o generate-token com
+// "URI de redirecionamento não confere" quando mandamos a URL do backend
+// aqui. O que está cadastrado de fato no "Sistema Externo" é a URL do
+// frontend (confirmado por gravação de tela do próprio redirect do SIEG) --
+// é contra ISSO que o generate-token valida, não contra pra onde o
+// navegador efetivamente chega depois (o middleware do frontend repassa pro
+// backend só depois, já com o fluxo iniciado). Suporte do SIEG segue sem
+// responder sobre corrigir o cadastro; enquanto isso, mandamos o valor que
+// bate com o cadastro deles.
+const URL_REDIRECT_CADASTRADA = "https://app.contabilidadeapta.com.br/login";
 // Validade informada pela doc: 30 dias. Guardamos com 1 dia de margem.
 const DURACAO_TOKEN_OAUTH_MS = 30 * 24 * 60 * 60 * 1000;
 const MARGEM_RENOVACAO_MS = 24 * 60 * 60 * 1000;
@@ -75,7 +80,7 @@ export async function trocarTokenTemporario(tokenTemporario: string, state: stri
         "X-Secret-Key": credenciais.secretKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ AccessToken: tokenTemporario, State: state, RedirectUri: URL_CALLBACK }),
+      body: JSON.stringify({ AccessToken: tokenTemporario, State: state, RedirectUri: URL_REDIRECT_CADASTRADA }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
