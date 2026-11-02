@@ -82,11 +82,24 @@ export async function trocarTokenTemporario(tokenTemporario: string, state: stri
     throw new Error(`Não foi possível falar com o SIEG: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  if (!resposta.ok) {
-    throw new Error(`SIEG recusou a troca do token temporário (HTTP ${resposta.status})`);
+  // Lê o corpo mesmo em erro (!ok): o envelope do SIEG traz ErrorMessage
+  // explicando a recusa mesmo em HTTP 400 -- descartar o corpo aqui jogava
+  // fora o motivo real e só sobrava o status.
+  const textoCorpo = await resposta.text();
+  let corpo: EnvelopeResposta | undefined;
+  try {
+    corpo = JSON.parse(textoCorpo) as EnvelopeResposta;
+  } catch {
+    corpo = undefined;
   }
 
-  const corpo = (await resposta.json()) as EnvelopeResposta;
+  if (!resposta.ok) {
+    const motivo = corpo?.ErrorMessage || textoCorpo || "sem detalhes";
+    throw new Error(`SIEG recusou a troca do token temporário (HTTP ${resposta.status}): ${motivo}`);
+  }
+  if (!corpo) {
+    throw new Error(`SIEG devolveu uma resposta que não é JSON válido: ${textoCorpo}`);
+  }
   if (corpo.IsFailure || corpo.IsSuccess === false) {
     throw new Error(corpo.ErrorMessage || "SIEG recusou a troca do token temporário");
   }
