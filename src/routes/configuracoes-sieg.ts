@@ -27,10 +27,13 @@ configuracoesSiegRouter.get("/configuracoes/sieg", asyncHandler(async (_req, res
   const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
   const clientId = config?.clientId || process.env.SIEG_CLIENT_ID || null;
   const secretKey = config?.secretKey || process.env.SIEG_SECRET_KEY || null;
+  const oauthValido = Boolean(config?.oauthToken && config.oauthExpiraEm && config.oauthExpiraEm > new Date());
   res.json({
     clientIdConfigurado: Boolean(clientId),
     secretKeyMascarada: mascarar(secretKey),
     origem: config?.clientId ? "banco" : process.env.SIEG_CLIENT_ID ? "ambiente" : "nenhuma",
+    oauthAutorizado: oauthValido,
+    oauthExpiraEm: oauthValido ? config!.oauthExpiraEm : null,
   });
 }));
 
