@@ -3,13 +3,16 @@
 // empresa/CNPJ). O token definitivo resultante fica em `ConfiguracaoSieg`,
 // mesmo registro das credenciais de sistema da Fase A.
 import { prisma } from "../prisma.js";
-import { obterTokenSistema } from "./auth.js";
+import { obterCredenciais } from "./auth.js";
 
 const URL_AUTORIZACAO = "https://app.sieg.com/AuthorizeAccess.aspx";
-// Assumido por convenção com create-jwt (/api/v1/create-jwt) -- a doc oficial
-// não detalha o formato exato deste endpoint. A Task 4 (autorização real)
-// confirma/corrige isto.
-const URL_GENERATE_TOKEN = "https://api.sieg.com/api/v1/generate-token";
+// Confirmado na página "Demonstração" (Swagger) da doc oficial.
+const URL_GENERATE_TOKEN = "https://api.sieg.com/api/v1/oauth/generate-token";
+// URL cadastrada no formulário de "Sistema Externo" -- ainda não confirmada
+// pelo suporte do SIEG (mensagem enviada, sem resposta). Enviada de volta
+// pro SIEG em todo generate-token (campo RedirectUri); a Task 4 confirma se
+// bate com o que está cadastrado do lado deles.
+const URL_CALLBACK = "https://api.contabilidadeapta.com.br/sieg/oauth/callback";
 // Validade informada pela doc: 30 dias. Guardamos com 1 dia de margem.
 const DURACAO_TOKEN_OAUTH_MS = 30 * 24 * 60 * 60 * 1000;
 const MARGEM_RENOVACAO_MS = 24 * 60 * 60 * 1000;
@@ -48,15 +51,31 @@ export async function limparState(): Promise<void> {
   await prisma.configuracaoSieg.update({ where: { id: 1 }, data: { oauthState: null } });
 }
 
-export async function trocarTokenTemporario(tokenTemporario: string): Promise<void> {
-  const jwtSistema = await obterTokenSistema();
+// Envelope comum às rotas OAuth do SIEG (visto na doc oficial, página
+// "Demonstração"): IsSuccess/ErrorMessage/StatusCode/Data/IsFailure.
+interface EnvelopeResposta {
+  IsSuccess?: boolean;
+  IsFailure?: boolean;
+  ErrorMessage?: string;
+  Data?: unknown;
+}
+
+export async function trocarTokenTemporario(tokenTemporario: string, state: string): Promise<void> {
+  const credenciais = await obterCredenciais();
+  if (!credenciais) {
+    throw new Error("SIEG não configurado: defina client_id e secret_key antes de autorizar");
+  }
 
   let resposta: globalThis.Response;
   try {
     resposta = await fetch(URL_GENERATE_TOKEN, {
       method: "POST",
-      headers: { Authorization: `Bearer ${jwtSistema}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ token: tokenTemporario }),
+      headers: {
+        "X-Client-Id": credenciais.clientId,
+        "X-Secret-Key": credenciais.secretKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ AccessToken: tokenTemporario, State: state, RedirectUri: URL_CALLBACK }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
@@ -67,13 +86,17 @@ export async function trocarTokenTemporario(tokenTemporario: string): Promise<vo
     throw new Error(`SIEG recusou a troca do token temporário (HTTP ${resposta.status})`);
   }
 
-  // Mesma cautela da Fase A: a doc mostra um formato de resposta, a API às
-  // vezes devolve outro (string pura em vez de objeto). Aceita os dois.
-  const corpo = (await resposta.json()) as unknown;
-  const token = typeof corpo === "string" ? corpo : (corpo as { Token?: string; token?: string })?.Token
-    ?? (corpo as { token?: string })?.token;
+  const corpo = (await resposta.json()) as EnvelopeResposta;
+  if (corpo.IsFailure || corpo.IsSuccess === false) {
+    throw new Error(corpo.ErrorMessage || "SIEG recusou a troca do token temporário");
+  }
+
+  // O schema da doc só declara `Data: object`, sem detalhar os campos --
+  // tenta os nomes mais prováveis (mesmo padrão de capitalização da API).
+  const dados = corpo.Data as { Token?: string; AccessToken?: string; access_token?: string } | undefined;
+  const token = dados?.Token ?? dados?.AccessToken ?? dados?.access_token;
   if (!token) {
-    throw new Error("SIEG não devolveu um token definitivo na resposta de generate-token");
+    throw new Error("SIEG não devolveu um token definitivo em Data na resposta de generate-token");
   }
 
   await prisma.configuracaoSieg.upsert({

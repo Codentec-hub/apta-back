@@ -5,7 +5,7 @@ import type { Request } from "express";
 import { Router } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
-import { credenciaisConfiguradas, obterClientId } from "../sieg/auth.js";
+import { credenciaisConfiguradas, obterCredenciais } from "../sieg/auth.js";
 import { gerarState, limparState, montarUrlAutorizacao, trocarTokenTemporario, validarState } from "../sieg/oauth.js";
 
 export const siegOauthRouter = Router();
@@ -27,7 +27,7 @@ siegOauthRouter.get("/sieg/oauth/autorizar", autenticar, asyncHandler(async (req
     res.status(400).json({ erro: "Configure client_id e secret_key em Configurações > Integrações antes de autorizar" });
     return;
   }
-  const clientId = await obterClientId();
+  const clientId = (await obterCredenciais())?.clientId;
   if (!clientId) {
     res.status(400).json({ erro: "client_id do SIEG não configurado" });
     return;
@@ -38,7 +38,15 @@ siegOauthRouter.get("/sieg/oauth/autorizar", autenticar, asyncHandler(async (req
 
 siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
   const state = typeof req.query.state === "string" ? req.query.state : undefined;
-  const tokenTemporario = typeof req.query.token === "string" ? req.query.token : undefined;
+  // "AccessToken" é o nome do campo usado pela doc oficial no corpo do
+  // generate-token -- assume-se o mesmo nome na query do callback. "token"
+  // fica como fallback caso o SIEG use um nome diferente na prática.
+  const tokenTemporario =
+    typeof req.query.AccessToken === "string"
+      ? req.query.AccessToken
+      : typeof req.query.token === "string"
+        ? req.query.token
+        : undefined;
 
   const validacao = await validarState(state);
   if (validacao === "sem-fluxo") {
@@ -55,7 +63,7 @@ siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
   }
 
   try {
-    await trocarTokenTemporario(tokenTemporario);
+    await trocarTokenTemporario(tokenTemporario, state!);
     await limparState();
     res.status(200).send(paginaResultado("Autorização concluída com sucesso! Pode fechar esta aba."));
   } catch (error) {

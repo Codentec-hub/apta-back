@@ -11,7 +11,7 @@ const CREATE_JWT_URL = "https://api.sieg.com/api/v1/create-jwt";
 const MARGEM_RENOVACAO_MS = 60 * 60 * 1000;
 const DURACAO_TOKEN_MS = 24 * 60 * 60 * 1000;
 
-interface Credenciais {
+export interface Credenciais {
   clientId: string;
   secretKey: string;
 }
@@ -20,7 +20,9 @@ let cache: { token: string; expiraEm: number } | null = null;
 // Evita duas chamadas simultâneas a create-jwt quando não há cache ainda.
 let emAndamento: Promise<string> | null = null;
 
-async function obterCredenciais(): Promise<Credenciais | null> {
+// Exportado pra Fase B (src/sieg/oauth.ts e rotas) reusarem a mesma regra de
+// precedência banco/ambiente, sem duplicar.
+export async function obterCredenciais(): Promise<Credenciais | null> {
   const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
   const clientId = config?.clientId || process.env.SIEG_CLIENT_ID;
   const secretKey = config?.secretKey || process.env.SIEG_SECRET_KEY;
@@ -30,12 +32,6 @@ async function obterCredenciais(): Promise<Credenciais | null> {
 
 export async function credenciaisConfiguradas(): Promise<boolean> {
   return (await obterCredenciais()) !== null;
-}
-
-// Usado pela Fase B (src/sieg/oauth.ts) pra montar a URL de autorização sem
-// duplicar a regra de precedência banco/ambiente de `obterCredenciais`.
-export async function obterClientId(): Promise<string | null> {
-  return (await obterCredenciais())?.clientId ?? null;
 }
 
 async function buscarNovoToken(): Promise<string> {

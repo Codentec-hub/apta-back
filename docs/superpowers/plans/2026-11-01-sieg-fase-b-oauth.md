@@ -55,7 +55,16 @@ Expected: uma URL de callback exata (ex.: algo em `api.contabilidadeapta.com.br/
 Ler a documentação oficial do endpoint `generate-token` (procurar em `integracoes.sieg.com/sistema-externo/docs/o-auth` — a "Demonstração" listada no menu lateral, não aberta ainda — ou o endpoint correspondente em "Endpoints disponíveis"). Registrar: método HTTP, URL exata, nome do parâmetro que carrega o token temporário (query, header ou corpo), se precisa do JWT do sistema (`Authorization: Bearer`) junto, e o formato da resposta (token definitivo + validade).
 Expected: specificação completa o bastante pra escrever `trocarTokenTemporario()` na Task 2 sem adivinhar.
 
-- [ ] **Step 3: Anotar os dois achados nesta seção do plano** (edição do próprio arquivo, sem commit — vira parte do contexto da Task 2)
+- [x] **Step 3: Anotar os dois achados nesta seção do plano**
+
+**Achado 1 (URL de callback)**: não está visível em nenhuma tela do painel self-service (conferido em "Configurações > Integrações", inclusive o painel "Editar" de cada chave). Mensagem enviada ao chat de suporte do SIEG perguntando qual URL está cadastrada e sugerindo `https://api.contabilidadeapta.com.br/sieg/oauth/callback` — sem resposta ainda. Achado posterior, na página "Demonstração" do `generate-token` (abaixo): o corpo da chamada tem um campo `RedirectUri`, ou seja, a URL é enviada pela Apta em cada troca, não é só uma checagem contra um valor fixo cadastrado — então a Task 4 testa isso diretamente com a URL de produção, sem precisar esperar o suporte confirmar antes.
+
+**Achado 2 (formato do `generate-token`)**: encontrado em `integracoes.sieg.com/sistema-externo/docs/oauth-v-engine` (página "Demonstração" sob Autenticação > OAuth 2.0 > Demonstração — um Swagger/OpenAPI interativo, igual ao que a Fase A já tinha usado pro `create-jwt`). Três endpoints confirmados:
+- `POST https://api.sieg.com/api/v1/oauth/generate-token` — headers `X-Client-Id`/`X-Secret-Key` (não o JWT do sistema), corpo `{ "AccessToken": string, "State": string, "RedirectUri": string }`, resposta `{ IsSuccess, ErrorMessage, StatusCode, Data, IsFailure }` (o token definitivo fica dentro de `Data`, cujo schema exato a doc não detalha — assumido como `Data.Token`/`Data.AccessToken` até a Task 4 confirmar).
+- `POST https://api.sieg.com/api/v1/oauth/refresh` — mesmos headers, corpo `{ "Token": string }` (útil pra Fase C).
+- `POST https://api.sieg.com/api/v1/oauth/revoke` — mesmos headers, corpo `{ "Token": string }`.
+
+Isso corrige a suposição original da Task 2 (que tinha usado `Authorization: Bearer` com o JWT do sistema, por convenção com o `create-jwt` — errado). Código já corrigido em `src/sieg/oauth.ts` e `src/sieg/auth.ts` (exportado `obterCredenciais`).
 
 ---
 
