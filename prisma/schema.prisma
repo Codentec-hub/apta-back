@@ -530,10 +530,19 @@ model ConfiguracaoEvolution {
 // integrador. Tem prioridade sobre SIEG_CLIENT_ID/SIEG_SECRET_KEY do
 // ambiente, igual ao padrão de ConfiguracaoGemini/ConfiguracaoEvolution.
 model ConfiguracaoSieg {
-  id        Int      @id @default(1)
-  clientId  String?  @map("client_id")
-  secretKey String?  @map("secret_key")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id            Int       @id @default(1)
+  clientId      String?   @map("client_id")
+  secretKey     String?   @map("secret_key")
+  // Token OAuth definitivo (Fase B) -- único, da conta Apta inteira, não por
+  // cliente/CNPJ (confirmado na tela de consentimento do SIEG: não há
+  // seletor de empresa, só a conta logada).
+  oauthToken    String?   @map("oauth_token")
+  oauthExpiraEm DateTime? @map("oauth_expira_em")
+  // State do fluxo de autorização em andamento (Fase B) -- em banco, não em
+  // memória, pra sobreviver a um restart/redeploy entre o redirect pro SIEG
+  // e o usuário voltar pro callback (achado da revisão de código).
+  oauthState    String?   @map("oauth_state")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   @@map("configuracao_sieg")
 }
