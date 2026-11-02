@@ -81,10 +81,13 @@ siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
   }
 
   try {
+    const inicio = Date.now();
     await trocarTokenTemporario(tokenTemporario, state!);
     await limparState();
+    console.log(`[sieg] troca de token concluída em ${Date.now() - inicio}ms`);
     res.status(200).send(paginaResultado("Autorização concluída com sucesso! Pode fechar esta aba."));
   } catch (error) {
+    console.error("[sieg] falha na troca do token:", error instanceof Error ? error.message : String(error));
     res.status(502).send(paginaResultado(`Falha ao concluir a autorização: ${error instanceof Error ? error.message : String(error)}`));
   }
 }));
