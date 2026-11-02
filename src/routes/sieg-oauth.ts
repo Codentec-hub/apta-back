@@ -54,15 +54,17 @@ siegOauthRouter.get("/sieg/oauth/autorizar", asyncHandler(async (req: Request, r
 
 siegOauthRouter.get("/sieg/oauth/callback", asyncHandler(async (req, res) => {
   const state = typeof req.query.state === "string" ? req.query.state : undefined;
-  // "AccessToken" é o nome do campo usado pela doc oficial no corpo do
-  // generate-token -- assume-se o mesmo nome na query do callback. "token"
-  // fica como fallback caso o SIEG use um nome diferente na prática.
+  // Confirmado em teste real (gravação de tela, 02/11/2026): o SIEG manda
+  // "accessToken" com "a" minúsculo -- a doc oficial mostra "AccessToken" e
+  // estava errada. Aceita os três formatos por garantia.
   const tokenTemporario =
-    typeof req.query.AccessToken === "string"
-      ? req.query.AccessToken
-      : typeof req.query.token === "string"
-        ? req.query.token
-        : undefined;
+    typeof req.query.accessToken === "string"
+      ? req.query.accessToken
+      : typeof req.query.AccessToken === "string"
+        ? req.query.AccessToken
+        : typeof req.query.token === "string"
+          ? req.query.token
+          : undefined;
 
   const validacao = await validarState(state);
   if (validacao === "sem-fluxo") {
