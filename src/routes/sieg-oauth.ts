@@ -3,23 +3,39 @@
 // sem o Authorization da nossa própria API -- protegido pelo `state`.
 import type { Request } from "express";
 import { Router } from "express";
+import { verificarToken } from "../auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { autenticar } from "../middleware/autenticar.js";
 import { credenciaisConfiguradas, obterCredenciais } from "../sieg/auth.js";
 import { gerarState, limparState, montarUrlAutorizacao, trocarTokenTemporario, validarState } from "../sieg/oauth.js";
 
 export const siegOauthRouter = Router();
 
-function podeAlterar(req: Request): boolean {
-  return req.usuario?.perfil === "ADMIN" || req.usuario?.perfil === "GESTOR";
-}
-
 function paginaResultado(mensagem: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Autorização SIEG</title></head><body style="font-family: sans-serif; padding: 2rem;"><p>${mensagem}</p></body></html>`;
 }
 
-siegOauthRouter.get("/sieg/oauth/autorizar", autenticar, asyncHandler(async (req, res) => {
-  if (!podeAlterar(req)) {
+// Rota navegada direto pelo navegador (pra seguir o redirect até o SIEG), não
+// chamada via fetch -- não dá pra mandar o Authorization header. Mesmo padrão
+// de /eventos: aceita o token também via query string.
+siegOauthRouter.get("/sieg/oauth/autorizar", asyncHandler(async (req: Request, res) => {
+  const header = req.headers.authorization;
+  const tokenHeader = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+  const tokenQuery = typeof req.query.token === "string" ? req.query.token : undefined;
+  const token = tokenHeader ?? tokenQuery;
+  if (!token) {
+    res.status(401).json({ erro: "Token não informado" });
+    return;
+  }
+
+  let usuario;
+  try {
+    usuario = verificarToken(token);
+  } catch {
+    res.status(401).json({ erro: "Token inválido ou expirado" });
+    return;
+  }
+
+  if (usuario.perfil !== "ADMIN" && usuario.perfil !== "GESTOR") {
     res.status(403).json({ erro: "Apenas administradores e gestores podem iniciar a autorização" });
     return;
   }
