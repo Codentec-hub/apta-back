@@ -41,6 +41,13 @@ app.use(entregaPublicaRouter);
 app.use(whatsappWebhookRouter);
 // Onboarding OAuth do SIEG: /autorizar exige login (middleware próprio),
 // /callback é público — o navegador chega aqui direto do SIEG.
+// Log temporário (Fase B, diagnóstico): confirma se o SIEG está batendo em
+// /sieg/oauth/callback de fato, com qual método -- remover depois que a
+// Task 4 for validada de ponta a ponta.
+app.use("/sieg", (req, _res, next) => {
+  console.log(`[sieg] ${req.method} ${req.originalUrl}`);
+  next();
+});
 app.use(siegOauthRouter);
 // Tempo real (SSE): autentica pelo token na URL.
 app.use(eventosRouter);
