@@ -100,6 +100,10 @@ async function buscarPagina(pagina: number): Promise<ItemSieg[]> {
 
   if (!resposta.ok) {
     const motivo = (!Array.isArray(corpo) && corpo?.ErrorMessage) || texto.slice(0, 300) || "sem detalhes";
+    // O SIEG não devolve lista vazia depois da última página: responde
+    // HTTP 404 "Nenhum certificado encontrado". Isso é o fim da lista (ou uma
+    // conta sem certificados, na página 0), não um erro.
+    if (resposta.status === 404 && /nenhum certificado/i.test(motivo)) return [];
     if (/limit|muitas|too many/i.test(motivo)) throw new LimiteAtingido(motivo);
     if (resposta.status === 401 || resposta.status === 403)
       throw new Error(`SIEG recusou o acesso (HTTP ${resposta.status}): ${motivo}. Confira se a autorização OAuth ainda vale.`);
