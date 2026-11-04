@@ -44,13 +44,50 @@ interface Contagem {
   NFSe?: number;
 }
 
+const CHAVES_CONTAGEM = ["NFe", "NFCe", "CTe", "CFe", "NFSe"] as const;
+
+/**
+ * Acha os números da contagem em qualquer formato de resposta: objeto puro
+ * (exemplo da doc), dentro de Data/data (envelope das outras rotas) ou com as
+ * chaves em minúsculas. Devolve null se não achar nada parecido.
+ */
+export function lerContagem(corpo: unknown): Contagem | null {
+  const visitar = (v: unknown, prof: number): Contagem | null => {
+    if (!v || typeof v !== "object" || prof > 4) return null;
+    const o = v as Record<string, unknown>;
+    const achadas: Contagem = {};
+    let tem = false;
+    for (const chave of CHAVES_CONTAGEM) {
+      const valor = o[chave] ?? o[chave.toLowerCase()] ?? o[chave.toUpperCase()];
+      if (valor !== undefined && valor !== null && Number.isFinite(Number(valor))) {
+        achadas[chave] = Number(valor);
+        tem = true;
+      }
+    }
+    if (tem) return achadas;
+    for (const filho of Object.values(o)) {
+      const r = visitar(filho, prof + 1);
+      if (r) return r;
+    }
+    return null;
+  };
+  return visitar(corpo, 0);
+}
+
 /** Conta as notas de uma empresa num mês (emitidas e recebidas) e grava. */
 export async function contarNotasEmpresa(documento: string, mes: string): Promise<void> {
   const { inicio, fim } = limitesMes(mes);
   for (const papel of ["emitente", "destinatario"] as Papel[]) {
-    const c = await chamarSieg<Contagem>("/api/v1/contar-xmls", {
+    const resposta = await chamarSieg<unknown>("/api/v1/contar-xmls", {
       corpo: { ...filtroPapel(papel, documento), DataEmissaoInicio: inicio, DataEmissaoFim: fim },
     });
+    const envelope = resposta as { IsSuccess?: boolean; success?: boolean } | null;
+    const sucessoSemNumeros = resposta === null || envelope?.IsSuccess === true || envelope?.success === true;
+    const c = lerContagem(resposta) ?? (sucessoSemNumeros ? {} : null);
+    if (!c) {
+      // Formato inesperado: melhor avisar do que gravar zero como se não houvesse notas.
+      throw new Error(`A SIEG respondeu a contagem num formato desconhecido: ${JSON.stringify(resposta).slice(0, 200)}`);
+    }
     const dados = {
       nfe: Number(c?.NFe ?? 0),
       nfce: Number(c?.NFCe ?? 0),
