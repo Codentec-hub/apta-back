@@ -9,6 +9,7 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
 import { credenciaisConfiguradas, invalidarCache, obterTokenSistema } from "../sieg/auth.js";
+import { estadoEmpresasSieg, iniciarSincronizacaoEmpresas } from "../sieg/empresas.js";
 
 export const configuracoesSiegRouter = Router();
 
@@ -74,4 +75,62 @@ configuracoesSiegRouter.get("/configuracoes/sieg/status", asyncHandler(async (_r
   } catch (error) {
     res.json({ ok: false, erro: error instanceof Error ? error.message : String(error) });
   }
+}));
+
+// Empresas/certificados cadastrados na conta SIEG (GET /api/v1/listar),
+// cruzadas com os clientes da Apta pelo CNPJ/CPF. A busca no SIEG roda em
+// segundo plano (ver sieg/empresas.ts); aqui só devolvemos o que já veio.
+async function respostaEmpresas() {
+  const estado = estadoEmpresasSieg();
+  const clientes = await prisma.cliente.findMany({
+    select: { id: true, razaoSocial: true, nomeFantasia: true, cnpj: true, ativo: true },
+  });
+  const porDocumento = new Map(clientes.map((c) => [c.cnpj.replace(/\D/g, ""), c]));
+  const documentosSieg = new Set(estado.empresas.map((e) => e.documento));
+
+  const empresas = estado.empresas
+    .map((e) => {
+      const cliente = porDocumento.get(e.documento);
+      return {
+        ...e,
+        cliente: cliente
+          ? { id: cliente.id, nome: cliente.nomeFantasia || cliente.razaoSocial, ativo: cliente.ativo }
+          : null,
+      };
+    })
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+
+  const clientesSemSieg =
+    estado.situacao === "concluida"
+      ? clientes
+          .filter((c) => c.ativo && !documentosSieg.has(c.cnpj.replace(/\D/g, "")))
+          .map((c) => ({ id: c.id, nome: c.nomeFantasia || c.razaoSocial, documento: c.cnpj.replace(/\D/g, "") }))
+          .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
+      : [];
+
+  const { empresas: _ignorar, ...situacao } = estado;
+  return {
+    ...situacao,
+    configurado: await credenciaisConfiguradas(),
+    empresas,
+    clientesSemSieg,
+    totalClientesAtivos: clientes.filter((c) => c.ativo).length,
+  };
+}
+
+configuracoesSiegRouter.get("/configuracoes/sieg/empresas", asyncHandler(async (_req, res) => {
+  // Primeira visita depois de um restart: já dispara a busca.
+  if (estadoEmpresasSieg().situacao === "nunca" && (await credenciaisConfiguradas())) {
+    iniciarSincronizacaoEmpresas();
+  }
+  res.json(await respostaEmpresas());
+}));
+
+configuracoesSiegRouter.post("/configuracoes/sieg/empresas/atualizar", asyncHandler(async (_req, res) => {
+  if (!(await credenciaisConfiguradas())) {
+    res.status(400).json({ erro: "Credenciais do SIEG não configuradas" });
+    return;
+  }
+  iniciarSincronizacaoEmpresas();
+  res.json(await respostaEmpresas());
 }));
