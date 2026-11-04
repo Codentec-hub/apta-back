@@ -53,7 +53,12 @@ const camposEmpresa = {
     .array(z.object({ codigo: z.string(), descricao: z.string() }))
     .optional()
     .nullable(),
-  atividades: z.array(z.enum(["servicos", "comercio", "industria"])).optional(),
+  atividades: z.array(z.enum(["servicos", "comercio", "industria", "particular"])).optional(),
+  // Itens da Lista de Serviços (LC 116/2003) marcados quando atividades inclui "servicos".
+  servicosPrestados: z
+    .array(z.object({ codigo: z.string(), descricao: z.string() }))
+    .optional()
+    .nullable(),
   inscricaoEstadual: z.string().trim().optional().nullable(),
   inscricaoMunicipal: z.string().trim().optional().nullable(),
   notasEmitidas: z.array(z.enum(["nfse", "nfe", "nfce", "cte"])).optional(),
@@ -90,6 +95,28 @@ const documentoSchema = z
   .transform((v) => v.replace(/\D/g, ""))
   .refine((v) => v.length === 11 || v.length === 14, "Documento deve ter 11 (CPF) ou 14 dígitos (CNPJ/CAEPF)");
 
+// Município é obrigatória pra toda empresa, qualquer que seja a atividade;
+// estadual só quando a empresa faz comércio. Em update parcial, só valida
+// quando um desses três campos está no payload -- não bloqueia edição de
+// campos não relacionados em clientes antigos com cadastro incompleto.
+function erroAtividadesInscricoes(
+  dados: { atividades?: string[]; inscricaoMunicipal?: string | null; inscricaoEstadual?: string | null },
+  existente?: { atividades: string[]; inscricaoMunicipal: string | null; inscricaoEstadual: string | null }
+): string | null {
+  const tocaCampos =
+    dados.atividades !== undefined || dados.inscricaoMunicipal !== undefined || dados.inscricaoEstadual !== undefined;
+  if (!tocaCampos && existente) return null;
+
+  const atividades = dados.atividades ?? existente?.atividades ?? [];
+  const municipal = dados.inscricaoMunicipal !== undefined ? dados.inscricaoMunicipal : existente?.inscricaoMunicipal ?? null;
+  const estadual = dados.inscricaoEstadual !== undefined ? dados.inscricaoEstadual : existente?.inscricaoEstadual ?? null;
+
+  if (atividades.length === 0) return "Escolha ao menos uma atividade";
+  if (!municipal?.trim()) return "Inscrição municipal é obrigatória para todas as atividades";
+  if (atividades.includes("comercio") && !estadual?.trim()) return "Inscrição estadual é obrigatória para comércio";
+  return null;
+}
+
 const criarClienteSchema = z.object({
   // Sócios vindos da consulta do CNPJ, cadastrados como contatos.
   socios: z
@@ -116,11 +143,18 @@ clientesRouter.post("/clientes", asyncHandler(async (req, res) => {
     return;
   }
 
-  const { socios, cnaesSecundarios, ...dados } = parsed.data;
+  const erroValidacao = erroAtividadesInscricoes(parsed.data);
+  if (erroValidacao) {
+    res.status(400).json({ erro: erroValidacao });
+    return;
+  }
+
+  const { socios, cnaesSecundarios, servicosPrestados, ...dados } = parsed.data;
   const criado = await prisma.cliente.create({
     data: {
       ...dados,
       ...(cnaesSecundarios ? { cnaesSecundarios } : {}),
+      ...(servicosPrestados ? { servicosPrestados } : {}),
       contatos: socios?.length
         ? { create: socios.map((s) => ({ nome: s.nome, cargo: s.cargo ?? null, responsavelLegal: Boolean(s.responsavelLegal) })) }
         : undefined,
@@ -164,12 +198,19 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
     }
   }
 
-  const { cnaesSecundarios, ...dadosAtualizar } = parsed.data;
+  const erroValidacao = erroAtividadesInscricoes(parsed.data, clienteExistente);
+  if (erroValidacao) {
+    res.status(400).json({ erro: erroValidacao });
+    return;
+  }
+
+  const { cnaesSecundarios, servicosPrestados, ...dadosAtualizar } = parsed.data;
   const cliente = await prisma.cliente.update({
     where: { id: req.params.id },
     data: {
       ...dadosAtualizar,
       ...(cnaesSecundarios !== undefined ? { cnaesSecundarios: cnaesSecundarios ?? Prisma.DbNull } : {}),
+      ...(servicosPrestados !== undefined ? { servicosPrestados: servicosPrestados ?? Prisma.DbNull } : {}),
     },
     include: clienteInclude,
   });

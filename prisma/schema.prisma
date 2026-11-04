@@ -97,8 +97,11 @@ model Cliente {
   cnaeDescricao      String?   @map("cnae_descricao")
   // [{ codigo, descricao }]
   cnaesSecundarios   Json?     @map("cnaes_secundarios")
-  // "servicos" | "comercio" | "industria"
+  // "servicos" | "comercio" | "industria" | "particular"
   atividades         String[]  @default([])
+  // Itens marcados da Lista de Serviços da LC 116/2003, só quando atividades
+  // inclui "servicos" -- [{ codigo, descricao }]
+  servicosPrestados  Json?     @map("servicos_prestados")
   inscricaoEstadual  String?   @map("inscricao_estadual")
   inscricaoMunicipal String?   @map("inscricao_municipal")
   // Notas que a empresa emite: "nfse" | "nfe" | "nfce" | "cte"
