@@ -9,11 +9,17 @@ export const TIPOS_XML = { nfe: 1, cte: 2, nfse: 3, nfce: 4, cfe: 5 } as const;
 export type TipoNota = keyof typeof TIPOS_XML;
 export type Papel = "emitente" | "destinatario";
 
-/** Primeiro e último instante do mês AAAA-MM no formato aceito pela SIEG. */
-export function limitesMes(mes: string): { inicio: string; fim: string } {
+/**
+ * Primeiro e último instante do mês AAAA-MM no formato aceito pela SIEG.
+ * Para NFS-e a SIEG só aceita data sem hora ("Certifique-se de apenas passar
+ * dia/mês/ano em NFSe", HTTP 400 visto em produção em 04/11/2026).
+ */
+export function limitesMes(mes: string, soData = false): { inicio: string; fim: string } {
   const [ano, m] = mes.split("-").map(Number) as [number, number];
-  const ultimo = new Date(Date.UTC(ano, m, 0)).getUTCDate();
-  return { inicio: `${mes}-01T00:00:00.000`, fim: `${mes}-${String(ultimo).padStart(2, "0")}T23:59:59.999` };
+  const ultimo = `${mes}-${String(new Date(Date.UTC(ano, m, 0)).getUTCDate()).padStart(2, "0")}`;
+  return soData
+    ? { inicio: `${mes}-01`, fim: ultimo }
+    : { inicio: `${mes}-01T00:00:00.000`, fim: `${ultimo}T23:59:59.999` };
 }
 
 export function mesesRecentes(quantos: number, base = new Date()): string[] {
@@ -152,7 +158,7 @@ async function gravarResumo(xml: string, documento: string, papel: Papel, mesPad
  * empresa com 500 notas leva ~5 minutos; o andamento fica em sieg_buscas_notas.
  */
 async function capturarNotas(buscaId: string, documento: string, mes: string, tipo: TipoNota, papel: Papel) {
-  const { inicio, fim } = limitesMes(mes);
+  const { inicio, fim } = limitesMes(mes, tipo === "nfse");
   let paginas = 0;
   let gravadas = 0;
   try {
@@ -309,7 +315,20 @@ export async function gerarRelatorio(
 ): Promise<ArquivoSieg> {
   const [ano, m] = mes.split("-").map(Number) as [number, number];
   const corpo = await chamarSieg<{ UrlDownload?: string }>("/api/v1/relatorios-pre-configurados", {
-    corpo: { Cnpj: documento, TypeXmlDownloadReport: RELATORIOS[relatorio].codigo, XmlType: TIPOS_XML[tipo], Month: m, Year: ano },
+    // A API real valida os nomes em português (TipoXml, Mes, Ano -- erro 400
+    // visto em produção em 04/11/2026), diferente do Swagger (XmlType, Month,
+    // Year). Mandamos os dois; campos a mais são ignorados.
+    corpo: {
+      Cnpj: documento,
+      TipoDownload: RELATORIOS[relatorio].codigo,
+      TipoXml: TIPOS_XML[tipo],
+      Mes: m,
+      Ano: ano,
+      TypeXmlDownloadReport: RELATORIOS[relatorio].codigo,
+      XmlType: TIPOS_XML[tipo],
+      Month: m,
+      Year: ano,
+    },
   });
   // A doc fala em base64 e o Swagger em UrlDownload: aceita os dois.
   if (corpo && typeof corpo === "object" && typeof corpo.UrlDownload === "string" && corpo.UrlDownload.startsWith("http")) {

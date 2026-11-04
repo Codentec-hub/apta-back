@@ -84,6 +84,14 @@ export function mensagemSieg(corpo: unknown): string | null {
   if (!corpo || typeof corpo !== "object") return typeof corpo === "string" && corpo ? corpo.slice(0, 300) : null;
   const c = corpo as Record<string, unknown>;
   if (typeof c["ErrorMessage"] === "string" && c["ErrorMessage"]) return c["ErrorMessage"] as string;
+  // Formato de validação: { Message: "Dados inválidos", Errors: [{ Property, Message }] }
+  if (Array.isArray(c["Errors"]) && c["Errors"].length) {
+    const detalhes = (c["Errors"] as { Property?: string; Message?: string }[])
+      .map((e) => [e.Property, e.Message].filter(Boolean).join(": "))
+      .join("; ");
+    return `${typeof c["Message"] === "string" ? `${c["Message"]} — ` : ""}${detalhes}`;
+  }
+  if (typeof c["Message"] === "string" && c["Message"]) return c["Message"] as string;
   if (typeof c["message"] === "string" && c["message"]) return c["message"] as string;
   if (Array.isArray(c["Mensagens"]) && c["Mensagens"].length) return (c["Mensagens"] as unknown[]).join(" ");
   return null;
