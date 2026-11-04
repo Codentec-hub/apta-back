@@ -533,19 +533,25 @@ model ConfiguracaoEvolution {
 // integrador. Tem prioridade sobre SIEG_CLIENT_ID/SIEG_SECRET_KEY do
 // ambiente, igual ao padrão de ConfiguracaoGemini/ConfiguracaoEvolution.
 model ConfiguracaoSieg {
-  id            Int       @id @default(1)
-  clientId      String?   @map("client_id")
-  secretKey     String?   @map("secret_key")
+  id                      Int       @id @default(1)
+  clientId                String?   @map("client_id")
+  secretKey               String?   @map("secret_key")
   // Token OAuth definitivo (Fase B) -- único, da conta Apta inteira, não por
   // cliente/CNPJ (confirmado na tela de consentimento do SIEG: não há
   // seletor de empresa, só a conta logada).
-  oauthToken    String?   @map("oauth_token")
-  oauthExpiraEm DateTime? @map("oauth_expira_em")
+  oauthToken              String?   @map("oauth_token")
+  oauthExpiraEm           DateTime? @map("oauth_expira_em")
   // State do fluxo de autorização em andamento (Fase B) -- em banco, não em
   // memória, pra sobreviver a um restart/redeploy entre o redirect pro SIEG
   // e o usuário voltar pro callback (achado da revisão de código).
-  oauthState    String?   @map("oauth_state")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  oauthState              String?   @map("oauth_state")
+  // Fase C: última renovação (refresh) do token OAuth e o erro, se houver.
+  oauthRenovadoEm         DateTime? @map("oauth_renovado_em")
+  oauthErroRenovacao      String?   @map("oauth_erro_renovacao")
+  // Última busca agendada (empresas + contagens) e o resultado dela.
+  ultimaSincronizacaoEm   DateTime? @map("ultima_sincronizacao_em")
+  ultimaSincronizacaoErro String?   @map("ultima_sincronizacao_erro")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
 
   @@map("configuracao_sieg")
 }
@@ -785,4 +791,102 @@ model LancamentoFinanceiro {
   cliente   Cliente? @relation(fields: [clienteId], references: [id], onDelete: SetNull)
 
   @@map("lancamentos_financeiros")
+}
+
+// ---------------------------------------------------------------------------
+// Dados lidos da SIEG (somente leitura -- a SIEG nunca é alterada pelo
+// sistema). Guardados aqui para a tela abrir sem consultar a SIEG e para a
+// busca agendada só pedir o que mudou.
+// ---------------------------------------------------------------------------
+
+// Empresa/certificado da conta SIEG (GET /api/v1/listar).
+model SiegEmpresa {
+  id                  String    @id // Id da SIEG ("39008-<documento>")
+  documento           String // CNPJ/CPF só dígitos
+  nome                String
+  ufCertificado       Int?      @map("uf_certificado")
+  certificadoExpiraEm DateTime? @map("certificado_expira_em")
+  consultaNoturna     Boolean   @default(false) @map("consulta_noturna")
+  ativo               Boolean   @default(false)
+  deletado            Boolean   @default(false)
+  // GET /api/v1/status: situação do certificado e a última consulta da SIEG.
+  statusSieg          String?   @map("status_sieg")
+  ultimaConsultaSieg  DateTime? @map("ultima_consulta_sieg")
+  atualizadoEm        DateTime  @updatedAt @map("atualizado_em")
+
+  @@index([documento])
+  @@map("sieg_empresas")
+}
+
+// Quantidade de notas por empresa, mês e papel (emitente/destinatário),
+// vinda de POST /api/v1/contar-xmls.
+model SiegContagem {
+  id           String   @id @default(uuid())
+  documento    String
+  mes          String // AAAA-MM
+  papel        String // "emitente" | "destinatario"
+  nfe          Int      @default(0)
+  nfce         Int      @default(0)
+  cte          Int      @default(0)
+  cfe          Int      @default(0)
+  nfse         Int      @default(0)
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  @@unique([documento, mes, papel])
+  @@index([mes])
+  @@map("sieg_contagens")
+}
+
+// Nota fiscal capturada da SIEG (POST /api/v1/baixar-xmls), só os dados de
+// resumo -- o XML completo é buscado sob demanda pela chave.
+model SiegNota {
+  chave                 String    @id
+  tipo                  String // nfe | nfce | cte | nfse | cfe
+  documentoEmpresa      String    @map("documento_empresa") // empresa da conta SIEG
+  papel                 String // "emitente" | "destinatario"
+  mes                   String // AAAA-MM da emissão
+  emissao               DateTime?
+  numero                String?
+  serie                 String?
+  emitenteDocumento     String?   @map("emitente_documento")
+  emitenteNome          String?   @map("emitente_nome")
+  destinatarioDocumento String?   @map("destinatario_documento")
+  destinatarioNome      String?   @map("destinatario_nome")
+  valor                 Float?
+  naturezaOperacao      String?   @map("natureza_operacao")
+  capturadaEm           DateTime  @default(now()) @map("capturada_em")
+
+  @@index([documentoEmpresa, mes])
+  @@map("sieg_notas")
+}
+
+// Uma busca de notas (empresa + mês + tipo + papel) e o andamento dela.
+model SiegBuscaNotas {
+  id          String    @id @default(uuid())
+  documento   String
+  mes         String
+  tipo        String
+  papel       String
+  situacao    String // andamento | concluida | erro
+  paginas     Int       @default(0)
+  notas       Int       @default(0)
+  erro        String?
+  iniciadaEm  DateTime  @default(now()) @map("iniciada_em")
+  concluidaEm DateTime? @map("concluida_em")
+
+  @@index([documento, mes])
+  @@map("sieg_buscas_notas")
+}
+
+// Registro de cada chamada feita à SIEG (painel de saúde da integração).
+model SiegChamada {
+  id        String   @id @default(uuid())
+  rota      String
+  status    Int?
+  duracaoMs Int      @map("duracao_ms")
+  erro      String?
+  criadoEm  DateTime @default(now()) @map("criado_em")
+
+  @@index([criadoEm])
+  @@map("sieg_chamadas")
 }

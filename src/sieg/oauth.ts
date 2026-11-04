@@ -133,3 +133,79 @@ export async function obterTokenOAuth(): Promise<string> {
   }
   return config.oauthToken;
 }
+
+// ---------------------------------------------------------------------------
+// Fase C -- renovação do token OAuth (POST /api/v1/oauth/refresh).
+// A SIEG pede um "refresh" a cada 30 dias; sem isso a integração para quando
+// o token vence e alguém precisa autorizar de novo à mão.
+// ---------------------------------------------------------------------------
+const URL_REFRESH = "https://api.sieg.com/api/v1/oauth/refresh";
+// Renova quando faltar menos que isto para vencer (a busca agendada roda de
+// hora em hora, então há várias chances antes do vencimento).
+export const RENOVAR_ANTES_MS = 7 * 24 * 60 * 60 * 1000;
+
+export async function renovarTokenOAuth(): Promise<{ expiraEm: Date }> {
+  const credenciais = await obterCredenciais();
+  if (!credenciais) throw new Error("SIEG não configurado: faltam client_id e secret_key");
+  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
+  if (!config?.oauthToken) throw new Error("Não há token OAuth para renovar -- autorize a conta na SIEG primeiro");
+
+  let resposta: globalThis.Response;
+  try {
+    resposta = await fetch(URL_REFRESH, {
+      method: "POST",
+      headers: {
+        "X-Client-Id": credenciais.clientId,
+        "X-Secret-Key": credenciais.secretKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ Token: config.oauthToken }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    const msg = `Não foi possível falar com a SIEG: ${error instanceof Error ? error.message : String(error)}`;
+    await prisma.configuracaoSieg.update({ where: { id: 1 }, data: { oauthErroRenovacao: msg } });
+    throw new Error(msg);
+  }
+
+  const texto = await resposta.text();
+  let corpo: EnvelopeResposta | string | undefined;
+  try {
+    corpo = JSON.parse(texto) as EnvelopeResposta | string;
+  } catch {
+    corpo = undefined;
+  }
+  const env = typeof corpo === "object" ? corpo : undefined;
+  if (!resposta.ok || env?.IsFailure || env?.IsSuccess === false) {
+    const msg = `SIEG recusou a renovação do token (HTTP ${resposta.status}): ${env?.ErrorMessage || texto.slice(0, 300) || "sem detalhes"}`;
+    await prisma.configuracaoSieg.update({ where: { id: 1 }, data: { oauthErroRenovacao: msg } });
+    throw new Error(msg);
+  }
+
+  // A doc só diz "estende o tempo de validade". Se vier um token novo (em
+  // Data ou como string), usamos ele; senão o mesmo token continua valendo.
+  const dados = env?.Data as { Token?: string; AccessToken?: string; access_token?: string } | string | undefined;
+  const novo =
+    (typeof corpo === "string" ? corpo : undefined) ??
+    (typeof dados === "string" ? dados : (dados?.Token ?? dados?.AccessToken ?? dados?.access_token));
+  const expiraEm = new Date(Date.now() + DURACAO_TOKEN_OAUTH_MS - MARGEM_RENOVACAO_MS);
+  await prisma.configuracaoSieg.update({
+    where: { id: 1 },
+    data: {
+      ...(novo ? { oauthToken: novo } : {}),
+      oauthExpiraEm: expiraEm,
+      oauthRenovadoEm: new Date(),
+      oauthErroRenovacao: null,
+    },
+  });
+  return { expiraEm };
+}
+
+/** Renova se o token estiver perto de vencer (usado pela busca agendada). */
+export async function renovarTokenSeNecessario(): Promise<boolean> {
+  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
+  if (!config?.oauthToken || !config.oauthExpiraEm) return false;
+  if (config.oauthExpiraEm.getTime() - Date.now() > RENOVAR_ANTES_MS) return false;
+  await renovarTokenOAuth();
+  return true;
+}

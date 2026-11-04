@@ -21,6 +21,8 @@ import { configuracaoEnvioRouter } from "./routes/configuracao-envio.js";
 import { configuracoesIntegracaoRouter } from "./routes/configuracoes-integracao.js";
 import { configuracoesSiegRouter } from "./routes/configuracoes-sieg.js";
 import { siegOauthRouter } from "./routes/sieg-oauth.js";
+import { siegDadosRouter } from "./routes/sieg-dados.js";
+import { agendarSieg } from "./sieg/agendamento.js";
 import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
 import { conversasRouter } from "./routes/conversas.js";
 import { agentesRouter } from "./routes/agentes.js";
@@ -30,7 +32,8 @@ import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 
 const app = express();
 
-app.use(cors());
+// Expõe o nome do arquivo nos downloads (XML/DANFE/relatórios da SIEG).
+app.use(cors({ exposedHeaders: ["Content-Disposition"] }));
 app.use(express.json());
 
 app.use(healthRouter);
@@ -67,6 +70,7 @@ app.use(documentosEntregaRouter);
 app.use(configuracaoEnvioRouter);
 app.use(configuracoesIntegracaoRouter);
 app.use(configuracoesSiegRouter);
+app.use(siegDadosRouter);
 app.use(conversasRouter);
 app.use(agentesRouter);
 app.use(consultaCnpjRouter);
@@ -85,4 +89,5 @@ app.listen(port, () => {
   console.log(`API do Sistema Apta rodando na porta ${port}`);
   agendarGeracaoAutomatica();
   agendarAlertasNaoLida();
+  agendarSieg();
 });

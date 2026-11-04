@@ -9,7 +9,7 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
 import { credenciaisConfiguradas, invalidarCache, obterTokenSistema } from "../sieg/auth.js";
-import { estadoEmpresasSieg, iniciarSincronizacaoEmpresas } from "../sieg/empresas.js";
+import { empresasSiegGravadas, estadoEmpresasSieg, iniciarSincronizacaoEmpresas } from "../sieg/empresas.js";
 
 export const configuracoesSiegRouter = Router();
 
@@ -77,51 +77,48 @@ configuracoesSiegRouter.get("/configuracoes/sieg/status", asyncHandler(async (_r
   }
 }));
 
-// Empresas/certificados cadastrados na conta SIEG (GET /api/v1/listar),
-// cruzadas com os clientes da Apta pelo CNPJ/CPF. A busca no SIEG roda em
-// segundo plano (ver sieg/empresas.ts); aqui só devolvemos o que já veio.
+// Empresas/certificados da conta SIEG, lidos do banco (sieg_empresas) e
+// cruzados com os clientes da Apta pelo CNPJ/CPF. A busca na SIEG roda em
+// segundo plano (ver sieg/empresas.ts) e grava no banco.
 async function respostaEmpresas() {
   const estado = estadoEmpresasSieg();
-  const clientes = await prisma.cliente.findMany({
-    select: { id: true, razaoSocial: true, nomeFantasia: true, cnpj: true, ativo: true },
-  });
+  const [gravadas, clientes] = await Promise.all([
+    empresasSiegGravadas(),
+    prisma.cliente.findMany({ select: { id: true, razaoSocial: true, nomeFantasia: true, cnpj: true, ativo: true } }),
+  ]);
   const porDocumento = new Map(clientes.map((c) => [c.cnpj.replace(/\D/g, ""), c]));
-  // Só certificados em uso contam: excluídos/inativos na SIEG não capturam notas.
-  const documentosSieg = new Set(estado.empresas.filter((e) => e.ativo && !e.deletado).map((e) => e.documento));
-
-  const empresas = estado.empresas
-    .map((e) => {
-      const cliente = porDocumento.get(e.documento);
-      return {
-        ...e,
-        cliente: cliente
-          ? { id: cliente.id, nome: cliente.nomeFantasia || cliente.razaoSocial, ativo: cliente.ativo }
-          : null,
-      };
-    })
-    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
-
-  const clientesSemSieg =
-    estado.situacao === "concluida"
-      ? clientes
-          .filter((c) => c.ativo && !documentosSieg.has(c.cnpj.replace(/\D/g, "")))
-          .map((c) => ({ id: c.id, nome: c.nomeFantasia || c.razaoSocial, documento: c.cnpj.replace(/\D/g, "") }))
-          .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
-      : [];
-
-  const { empresas: _ignorar, ...situacao } = estado;
+  const empresas = gravadas.map((e) => {
+    const cliente = porDocumento.get(e.documento);
+    return {
+      ...e,
+      cliente: cliente ? { id: cliente.id, nome: cliente.nomeFantasia || cliente.razaoSocial, ativo: cliente.ativo } : null,
+    };
+  });
+  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
+  // Sem busca nesta execução do servidor, mas com dados gravados: mostra como concluída.
+  const situacao =
+    estado.situacao === "nunca" && gravadas.length > 0 ? { ...estado, situacao: "concluida" as const } : estado;
   return {
     ...situacao,
+    concluidaEm:
+      situacao.concluidaEm ??
+      config?.ultimaSincronizacaoEm?.toISOString() ??
+      (await prisma.siegEmpresa.findFirst({ orderBy: { atualizadoEm: "desc" }, select: { atualizadoEm: true } }))
+        ?.atualizadoEm.toISOString() ??
+      null,
     configurado: await credenciaisConfiguradas(),
     empresas,
-    clientesSemSieg,
     totalClientesAtivos: clientes.filter((c) => c.ativo).length,
   };
 }
 
 configuracoesSiegRouter.get("/configuracoes/sieg/empresas", asyncHandler(async (_req, res) => {
-  // Primeira visita depois de um restart: já dispara a busca.
-  if (estadoEmpresasSieg().situacao === "nunca" && (await credenciaisConfiguradas())) {
+  // Banco vazio (primeira vez): já dispara a busca.
+  if (
+    estadoEmpresasSieg().situacao === "nunca" &&
+    (await prisma.siegEmpresa.count()) === 0 &&
+    (await credenciaisConfiguradas())
+  ) {
     iniciarSincronizacaoEmpresas();
   }
   res.json(await respostaEmpresas());
@@ -158,11 +155,13 @@ function ehAdmin(req: Request): boolean {
 }
 
 async function planoClientesSieg() {
-  const estado = estadoEmpresasSieg();
-  if (estado.situacao !== "concluida") return null;
+  if (estadoEmpresasSieg().situacao === "andamento") return null;
+  const gravadas = await empresasSiegGravadas();
+  if (gravadas.length === 0) return null;
+  const config = await prisma.configuracaoSieg.findUnique({ where: { id: 1 } });
 
-  const ativas = new Map<string, (typeof estado.empresas)[number]>();
-  for (const e of estado.empresas) {
+  const ativas = new Map<string, (typeof gravadas)[number]>();
+  for (const e of gravadas) {
     if (e.ativo && !e.deletado && (e.documento.length === 11 || e.documento.length === 14) && !ativas.has(e.documento))
       ativas.set(e.documento, e);
   }
@@ -194,7 +193,13 @@ async function planoClientesSieg() {
     }))
     .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
 
-  return { lidaEm: estado.concluidaEm, totalAtivasSieg: ativas.size, criar, manter: manter.length, apagar };
+  return {
+    lidaEm: estadoEmpresasSieg().concluidaEm ?? config?.ultimaSincronizacaoEm?.toISOString() ?? null,
+    totalAtivasSieg: ativas.size,
+    criar,
+    manter: manter.length,
+    apagar,
+  };
 }
 
 configuracoesSiegRouter.get("/configuracoes/sieg/clientes/previa", asyncHandler(async (req, res) => {

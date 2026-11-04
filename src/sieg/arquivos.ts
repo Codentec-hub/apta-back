@@ -1,0 +1,279 @@
+// Leitura dos arquivos que a SIEG devolve: ZIP em base64 (baixar em lote),
+// XML em base64 ou texto, PDF em base64 (DANFE) e planilhas (relatórios).
+// Sem dependências novas: o ZIP é lido pelo diretório central + zlib.
+import { inflateRawSync } from "node:zlib";
+
+export interface ArquivoSieg {
+  nome: string;
+  conteudo: Buffer;
+  tipo: "xml" | "pdf" | "zip" | "planilha" | "outro";
+}
+
+/** Lê as entradas de um arquivo ZIP (método "stored" ou "deflate"). */
+export function lerZip(zip: Buffer): { nome: string; conteudo: Buffer }[] {
+  // Fim do diretório central: assinatura 0x06054b50 nos últimos ~64 KB.
+  let fim = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65_557); i--) {
+    if (zip.readUInt32LE(i) === 0x06054b50) {
+      fim = i;
+      break;
+    }
+  }
+  if (fim < 0) throw new Error("Arquivo ZIP inválido (sem diretório central)");
+  const total = zip.readUInt16LE(fim + 10);
+  let p = zip.readUInt32LE(fim + 16);
+  const saida: { nome: string; conteudo: Buffer }[] = [];
+  for (let n = 0; n < total; n++) {
+    if (zip.readUInt32LE(p) !== 0x02014b50) break;
+    const metodo = zip.readUInt16LE(p + 10);
+    const tamanhoComprimido = zip.readUInt32LE(p + 20);
+    const tamNome = zip.readUInt16LE(p + 28);
+    const tamExtra = zip.readUInt16LE(p + 30);
+    const tamComentario = zip.readUInt16LE(p + 32);
+    const local = zip.readUInt32LE(p + 42);
+    const nome = zip.subarray(p + 46, p + 46 + tamNome).toString("utf8");
+    p += 46 + tamNome + tamExtra + tamComentario;
+    if (nome.endsWith("/")) continue; // pasta
+    const inicioDados = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const dados = zip.subarray(inicioDados, inicioDados + tamanhoComprimido);
+    const conteudo = metodo === 0 ? Buffer.from(dados) : metodo === 8 ? inflateRawSync(dados) : null;
+    if (conteudo) saida.push({ nome, conteudo });
+  }
+  return saida;
+}
+
+function classificar(b: Buffer): ArquivoSieg["tipo"] {
+  const inicio = b.subarray(0, 8).toString("latin1").replace(/^﻿|^\xEF\xBB\xBF/, "").trimStart();
+  if (inicio.startsWith("<")) return "xml";
+  if (inicio.startsWith("%PDF")) return "pdf";
+  if (b[0] === 0x50 && b[1] === 0x4b) return "zip";
+  return "outro";
+}
+
+const pareceBase64 = (s: string) => s.length >= 16 && /^[A-Za-z0-9+/=\r\n]+$/.test(s.slice(0, 400));
+
+/**
+ * Procura arquivos em qualquer parte da resposta da SIEG (string solta,
+ * campo Data/Xml/Arquivo, lista...), decodificando base64 e abrindo ZIPs.
+ * A documentação muda de formato de rota para rota, então isto é tolerante.
+ */
+export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
+  const arquivos: ArquivoSieg[] = [];
+  const visitar = (valor: unknown, nome: string, profundidade: number) => {
+    if (profundidade > 6 || valor === null || valor === undefined) return;
+    if (typeof valor === "string") {
+      const texto = valor.trim();
+      if (texto.startsWith("<")) {
+        arquivos.push({ nome: `${nome}.xml`, conteudo: Buffer.from(texto, "utf8"), tipo: "xml" });
+        return;
+      }
+      if (!pareceBase64(texto)) return;
+      const bin = Buffer.from(texto, "base64");
+      const tipo = classificar(bin);
+      if (tipo === "zip") {
+        let entradas: { nome: string; conteudo: Buffer }[] = [];
+        try {
+          entradas = lerZip(bin);
+        } catch {
+          arquivos.push({ nome: `${nome}.zip`, conteudo: bin, tipo: "planilha" });
+          return;
+        }
+        // XLSX também é um ZIP: se não tiver XML fiscal dentro, é planilha.
+        const ehPlanilha = entradas.some((e) => e.nome.startsWith("xl/"));
+        if (ehPlanilha) {
+          arquivos.push({ nome: `${nome}.xlsx`, conteudo: bin, tipo: "planilha" });
+          return;
+        }
+        for (const e of entradas) arquivos.push({ nome: e.nome, conteudo: e.conteudo, tipo: classificar(e.conteudo) });
+        return;
+      }
+      if (tipo !== "outro") arquivos.push({ nome: `${nome}.${tipo}`, conteudo: bin, tipo });
+      return;
+    }
+    if (Array.isArray(valor)) {
+      valor.forEach((v, i) => visitar(v, `${nome}-${i + 1}`, profundidade + 1));
+      return;
+    }
+    if (typeof valor === "object") {
+      for (const [k, v] of Object.entries(valor as Record<string, unknown>)) visitar(v, k, profundidade + 1);
+    }
+  };
+  visitar(corpo, "arquivo", 0);
+  return arquivos;
+}
+
+// ---------------------------------------------------------------------------
+// Resumo de um documento fiscal a partir do XML (NF-e, NFC-e, CT-e, CF-e e
+// NFS-e nos padrões mais comuns: nacional, ABRASF e similares).
+// ---------------------------------------------------------------------------
+
+export interface ResumoNota {
+  chave: string;
+  tipo: "nfe" | "nfce" | "cte" | "cfe" | "nfse";
+  emissao: Date | null;
+  numero: string | null;
+  serie: string | null;
+  emitenteDocumento: string | null;
+  emitenteNome: string | null;
+  destinatarioDocumento: string | null;
+  destinatarioNome: string | null;
+  valor: number | null;
+  naturezaOperacao: string | null;
+  /** Evento (cancelamento etc.), não uma nota. */
+  ehEvento: boolean;
+}
+
+/** Conteúdo da primeira tag com esse nome (com ou sem prefixo de namespace). */
+function tag(xml: string, nome: string): string | null {
+  const m = new RegExp(`<(?:[\\w-]+:)?${nome}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w-]+:)?${nome}>`, "i").exec(xml);
+  return m ? m[1]!.trim() : null;
+}
+function primeiraTag(xml: string | null, nomes: string[]): string | null {
+  if (!xml) return null;
+  for (const n of nomes) {
+    const v = tag(xml, n);
+    if (v) return v;
+  }
+  return null;
+}
+const digitos = (v: string | null) => (v ? v.replace(/\D/g, "") || null : null);
+const numero = (v: string | null) => {
+  if (!v) return null;
+  const n = Number(v.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+function data(v: string | null): Date | null {
+  if (!v) return null;
+  // CF-e usa AAAAMMDD
+  const t = /^\d{8}$/.test(v) ? `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}` : v;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+const texto = (v: string | null) =>
+  v
+    ? v
+        .replace(/<!\[CDATA\[|\]\]>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .trim() || null
+    : null;
+const docDe = (bloco: string | null) => digitos(primeiraTag(bloco, ["CNPJ", "Cnpj", "CPF", "Cpf"]));
+
+export function resumirXml(xml: string): ResumoNota | null {
+  const ehEvento = /<(?:[\w-]+:)?(procEventoNFe|procEventoCTe|evento|eventoCTe)[\s>]/.test(xml) && !/<(?:[\w-]+:)?infNFe[\s>]/.test(xml);
+  if (ehEvento) {
+    const chave = digitos(primeiraTag(xml, ["chNFe", "chCTe"]));
+    return chave
+      ? {
+          chave,
+          tipo: "nfe",
+          emissao: data(primeiraTag(xml, ["dhEvento"])),
+          numero: null,
+          serie: null,
+          emitenteDocumento: null,
+          emitenteNome: null,
+          destinatarioDocumento: null,
+          destinatarioNome: null,
+          valor: null,
+          naturezaOperacao: texto(primeiraTag(xml, ["descEvento", "xEvento"])),
+          ehEvento: true,
+        }
+      : null;
+  }
+
+  // NF-e / NFC-e
+  const idNfe = /<(?:[\w-]+:)?infNFe[^>]*Id="NFe(\d{44})"/.exec(xml)?.[1];
+  if (idNfe || /<(?:[\w-]+:)?infNFe[\s>]/.test(xml)) {
+    const ide = tag(xml, "ide");
+    const emit = tag(xml, "emit");
+    const dest = tag(xml, "dest");
+    const mod = primeiraTag(ide, ["mod"]);
+    return {
+      chave: idNfe ?? digitos(primeiraTag(xml, ["chNFe"])) ?? "",
+      tipo: mod === "65" ? "nfce" : "nfe",
+      emissao: data(primeiraTag(ide, ["dhEmi", "dEmi"])),
+      numero: primeiraTag(ide, ["nNF"]),
+      serie: primeiraTag(ide, ["serie"]),
+      emitenteDocumento: docDe(emit),
+      emitenteNome: texto(primeiraTag(emit, ["xNome"])),
+      destinatarioDocumento: docDe(dest),
+      destinatarioNome: texto(primeiraTag(dest, ["xNome"])),
+      valor: numero(primeiraTag(tag(xml, "ICMSTot"), ["vNF"])),
+      naturezaOperacao: texto(primeiraTag(ide, ["natOp"])),
+      ehEvento: false,
+    };
+  }
+
+  // CT-e
+  const idCte = /<(?:[\w-]+:)?infCte[^>]*Id="CTe(\d{44})"/.exec(xml)?.[1];
+  if (idCte || /<(?:[\w-]+:)?infCte[\s>]/.test(xml)) {
+    const ide = tag(xml, "ide");
+    const emit = tag(xml, "emit");
+    const dest = tag(xml, "dest") ?? tag(xml, "toma") ?? tag(xml, "rem");
+    return {
+      chave: idCte ?? digitos(primeiraTag(xml, ["chCTe"])) ?? "",
+      tipo: "cte",
+      emissao: data(primeiraTag(ide, ["dhEmi"])),
+      numero: primeiraTag(ide, ["nCT"]),
+      serie: primeiraTag(ide, ["serie"]),
+      emitenteDocumento: docDe(emit),
+      emitenteNome: texto(primeiraTag(emit, ["xNome"])),
+      destinatarioDocumento: docDe(dest),
+      destinatarioNome: texto(primeiraTag(dest, ["xNome"])),
+      valor: numero(primeiraTag(tag(xml, "vPrest"), ["vTPrest"])),
+      naturezaOperacao: texto(primeiraTag(ide, ["natOp"])),
+      ehEvento: false,
+    };
+  }
+
+  // CF-e SAT
+  const idCfe = /<(?:[\w-]+:)?infCFe[^>]*Id="CFe(\d{44})"/.exec(xml)?.[1];
+  if (idCfe) {
+    const ide = tag(xml, "ide");
+    const emit = tag(xml, "emit");
+    const dest = tag(xml, "dest");
+    return {
+      chave: idCfe,
+      tipo: "cfe",
+      emissao: data(primeiraTag(ide, ["dEmi"])),
+      numero: primeiraTag(ide, ["nCFe"]),
+      serie: primeiraTag(ide, ["nserieSAT"]),
+      emitenteDocumento: docDe(emit),
+      emitenteNome: texto(primeiraTag(emit, ["xNome", "xFant"])),
+      destinatarioDocumento: docDe(dest),
+      destinatarioNome: texto(primeiraTag(dest, ["xNome"])),
+      valor: numero(primeiraTag(xml, ["vCFe"])),
+      naturezaOperacao: null,
+      ehEvento: false,
+    };
+  }
+
+  // NFS-e (padrão nacional e ABRASF/municipais)
+  if (/nfse|CompNfse|InfNfse|infNFSe|Nfse/i.test(xml)) {
+    const prestador = tag(xml, "prest") ?? tag(xml, "PrestadorServico") ?? tag(xml, "Prestador") ?? tag(xml, "emit");
+    const tomador = tag(xml, "toma") ?? tag(xml, "TomadorServico") ?? tag(xml, "Tomador");
+    const numeroNota = primeiraTag(xml, ["nNFSe", "Numero", "NumeroNfse"]);
+    const emitenteDocumento = docDe(prestador);
+    const chave =
+      digitos(/Id="NFS(\d{40,60})"/.exec(xml)?.[1] ?? null) ??
+      digitos(primeiraTag(xml, ["chNFSe", "ChaveAcesso"])) ??
+      `nfse-${emitenteDocumento ?? "x"}-${numeroNota ?? Date.now()}`;
+    return {
+      chave,
+      tipo: "nfse",
+      emissao: data(primeiraTag(xml, ["dhEmi", "DataEmissao", "dhProc", "Competencia"])),
+      numero: numeroNota,
+      serie: primeiraTag(xml, ["serie", "Serie"]),
+      emitenteDocumento,
+      emitenteNome: texto(primeiraTag(prestador, ["xNome", "RazaoSocial", "NomeFantasia"])),
+      destinatarioDocumento: docDe(tomador),
+      destinatarioNome: texto(primeiraTag(tomador, ["xNome", "RazaoSocial"])),
+      valor: numero(primeiraTag(xml, ["vLiq", "vServ", "ValorLiquidoNfse", "ValorServicos"])),
+      naturezaOperacao: texto(primeiraTag(xml, ["xDescServ", "Discriminacao"]))?.slice(0, 200) ?? null,
+      ehEvento: false,
+    };
+  }
+  return null;
+}
