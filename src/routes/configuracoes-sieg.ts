@@ -86,7 +86,8 @@ async function respostaEmpresas() {
     select: { id: true, razaoSocial: true, nomeFantasia: true, cnpj: true, ativo: true },
   });
   const porDocumento = new Map(clientes.map((c) => [c.cnpj.replace(/\D/g, ""), c]));
-  const documentosSieg = new Set(estado.empresas.map((e) => e.documento));
+  // Só certificados em uso contam: excluídos/inativos na SIEG não capturam notas.
+  const documentosSieg = new Set(estado.empresas.filter((e) => e.ativo && !e.deletado).map((e) => e.documento));
 
   const empresas = estado.empresas
     .map((e) => {
