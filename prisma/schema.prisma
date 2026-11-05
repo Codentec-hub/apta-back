@@ -108,6 +108,9 @@ model Cliente {
   notasEmitidas      String[]  @default([]) @map("notas_emitidas")
   cep                String?
   endereco           String?
+  // Última consulta automática na Receita (preenchimento do cadastro); evita
+  // consultar de novo o mesmo CNPJ toda noite.
+  receitaConsultadaEm DateTime? @map("receita_consultada_em")
 
   responsaveis           ClienteResponsavel[]
   contatos               ContatoCliente[]

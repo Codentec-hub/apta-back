@@ -5,6 +5,7 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { recalcularFuturas } from "../obrigacoes/gerar-entregas.js";
 import { prisma } from "../prisma.js";
+import { completarEmSegundoPlano } from "../clientes/completar.js";
 import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
 import { aoInativarCliente, aoReativarCliente, aplicarRegimePorNome } from "../obrigacoes/alocacao.js";
 
@@ -163,6 +164,8 @@ clientesRouter.post("/clientes", asyncHandler(async (req, res) => {
   // O regime escolhido já traz as obrigações dele (como "Aplicar regime").
   const obrigacoesAplicadas = await aplicarRegimePorNome(criado.id, parsed.data.regimeTributario);
   const cliente = await prisma.cliente.findUniqueOrThrow({ where: { id: criado.id }, include: clienteInclude });
+  // Completa o que ficou vazio (Receita, SIEG, XMLs) sem segurar a resposta.
+  completarEmSegundoPlano(criado.id);
   res.status(201).json({ ...cliente, obrigacoesAplicadas });
 }));
 

@@ -8,6 +8,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { prisma } from "../prisma.js";
+import { completarTodos } from "../clientes/completar.js";
 import { credenciaisConfiguradas, invalidarCache, obterTokenSistema } from "../sieg/auth.js";
 import { empresasSiegGravadas, estadoEmpresasSieg, iniciarSincronizacaoEmpresas } from "../sieg/empresas.js";
 
@@ -260,5 +261,7 @@ configuracoesSiegRouter.post("/configuracoes/sieg/clientes/aplicar", asyncHandle
   console.log(
     `[sieg] clientes importados por ${req.usuario?.usuarioId}: ${resultado.criados} criados, ${resultado.apagados} apagados, ${plano.manter} mantidos`,
   );
+  // Os clientes novos chegam só com nome e CNPJ: completa o cadastro sozinho.
+  if (resultado.criados > 0) void completarTodos().catch((e) => console.error("[clientes] falha ao completar cadastros", e));
   res.json({ ...resultado, mantidos: plano.manter });
 }));

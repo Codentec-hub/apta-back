@@ -435,3 +435,33 @@ export function descreverResposta(corpo: unknown): string {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
     .slice(0, 900);
 }
+
+/**
+ * Inscrições (estadual e municipal) de uma empresa lidas de um XML de nota em
+ * que ela aparece -- como emitente (NF-e: <emit><IE>; NFS-e: IM do prestador)
+ * ou como destinatária/tomadora. "ISENTO" e vazios são ignorados.
+ */
+export function inscricoesDoXml(xml: string, documento: string): { ie: string | null; im: string | null } {
+  const limpar = (v: string | null) => {
+    const t = texto(v)?.trim() ?? null;
+    return t && !/^isent/i.test(t) && /\d/.test(t) && !/^[0.\-/\s]+$/.test(t) ? t : null;
+  };
+  const blocos = [
+    tag(xml, "emit"),
+    tag(xml, "dest"),
+    tag(xml, "prest"),
+    tag(xml, "toma"),
+    tag(xml, "PrestadorServico"),
+    tag(xml, "Prestador"),
+    tag(xml, "TomadorServico"),
+    tag(xml, "Tomador"),
+  ].filter((b): b is string => Boolean(b));
+  let ie: string | null = null;
+  let im: string | null = null;
+  for (const b of blocos) {
+    if (docDe(b) !== documento) continue;
+    ie ??= limpar(primeiraTag(b, ["IE"]));
+    im ??= limpar(primeiraTag(b, ["IM", "InscricaoMunicipal"]));
+  }
+  return { ie, im };
+}

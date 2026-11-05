@@ -24,6 +24,7 @@ import { siegOauthRouter } from "./routes/sieg-oauth.js";
 import { siegDadosRouter } from "./routes/sieg-dados.js";
 import { agendarSieg } from "./sieg/agendamento.js";
 import { agendarSaudeFiscal } from "./saude-fiscal/agendamento.js";
+import { agendarPreenchimentoClientes } from "./clientes/completar.js";
 import { saudeFiscalPublicoRouter, saudeFiscalRouter } from "./routes/saude-fiscal.js";
 import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
 import { conversasRouter } from "./routes/conversas.js";
@@ -96,4 +97,5 @@ app.listen(port, () => {
   agendarAlertasNaoLida();
   agendarSieg();
   agendarSaudeFiscal();
+  agendarPreenchimentoClientes();
 });
