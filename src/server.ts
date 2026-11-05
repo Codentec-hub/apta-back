@@ -23,6 +23,8 @@ import { configuracoesSiegRouter } from "./routes/configuracoes-sieg.js";
 import { siegOauthRouter } from "./routes/sieg-oauth.js";
 import { siegDadosRouter } from "./routes/sieg-dados.js";
 import { agendarSieg } from "./sieg/agendamento.js";
+import { agendarSaudeFiscal } from "./saude-fiscal/agendamento.js";
+import { saudeFiscalPublicoRouter, saudeFiscalRouter } from "./routes/saude-fiscal.js";
 import { agendarAlertasNaoLida } from "./obrigacoes/alerta-nao-lida.js";
 import { conversasRouter } from "./routes/conversas.js";
 import { agentesRouter } from "./routes/agentes.js";
@@ -40,6 +42,8 @@ app.use(healthRouter);
 // Link público do protocolo de entrega (sem login) — antes dos routers que
 // exigem autenticação para tudo que passa por eles.
 app.use(entregaPublicaRouter);
+// Link público do relatório de saúde fiscal (sem login).
+app.use(saudeFiscalPublicoRouter);
 // Webhook da Evolution API (sem login) — validado pelo token no caminho.
 app.use(whatsappWebhookRouter);
 // Onboarding OAuth do SIEG: /autorizar exige login (middleware próprio),
@@ -71,6 +75,7 @@ app.use(configuracaoEnvioRouter);
 app.use(configuracoesIntegracaoRouter);
 app.use(configuracoesSiegRouter);
 app.use(siegDadosRouter);
+app.use(saudeFiscalRouter);
 app.use(conversasRouter);
 app.use(agentesRouter);
 app.use(consultaCnpjRouter);
@@ -90,4 +95,5 @@ app.listen(port, () => {
   agendarGeracaoAutomatica();
   agendarAlertasNaoLida();
   agendarSieg();
+  agendarSaudeFiscal();
 });

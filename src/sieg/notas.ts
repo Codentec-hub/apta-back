@@ -1,8 +1,10 @@
 // Notas fiscais da SIEG: contagem por mês, captura da lista de notas,
 // XML/DANFE/eventos de uma nota, relatórios prontos e status do certificado.
 // Tudo SOMENTE LEITURA, via chamarSieg (que respeita o limite de cada rota).
+import { gunzipSync, gzipSync } from "node:zlib";
+
 import { prisma } from "../prisma.js";
-import { extrairArquivos, resumirXml, type ArquivoSieg } from "./arquivos.js";
+import { EVENTO_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
 import { chamarSieg, ErroSieg } from "./cliente.js";
 
 export const TIPOS_XML = { nfe: 1, cte: 2, nfse: 3, nfce: 4, cfe: 5 } as const;
@@ -166,10 +168,27 @@ export function iniciarContagemTodas(mes: string): EstadoContagem {
 
 const buscasEmAndamento = new Set<string>();
 
-async function gravarResumo(xml: string, documento: string, papel: Papel, mesPadrao: string, tipoPadrao: TipoNota) {
+/**
+ * Grava uma nota (resumo + XML compactado) ou aplica um evento. O mês gravado
+ * é o do filtro usado na SIEG, não o da data de emissão em UTC: assim a
+ * comparação "contadas x capturadas" bate (uma nota das 22h do dia 31 em
+ * Brasília já é dia 1º em UTC).
+ */
+async function gravarResumo(
+  xml: string,
+  documento: string,
+  papel: Papel,
+  mes: string,
+  tipoPadrao: TipoNota,
+  canceladas: Set<string>,
+): Promise<"nota" | "evento" | null> {
   const r = resumirXml(xml);
-  if (!r || r.ehEvento || !r.chave) return false;
-  const mes = r.emissao ? r.emissao.toISOString().slice(0, 7) : mesPadrao;
+  if (!r || !r.chave) return null;
+  if (r.ehEvento) {
+    // Aplicado no fim da captura: o evento pode vir antes da nota.
+    if (r.tipoEvento === EVENTO_CANCELAMENTO) canceladas.add(r.chave);
+    return "evento";
+  }
   const dados = {
     tipo: r.tipo ?? tipoPadrao,
     documentoEmpresa: documento,
@@ -184,9 +203,10 @@ async function gravarResumo(xml: string, documento: string, papel: Papel, mesPad
     destinatarioNome: r.destinatarioNome,
     valor: r.valor,
     naturezaOperacao: r.naturezaOperacao,
+    xml: gzipSync(Buffer.from(xml, "utf8")),
   };
   await prisma.siegNota.upsert({ where: { chave: r.chave }, create: { chave: r.chave, ...dados }, update: dados });
-  return true;
+  return "nota";
 }
 
 /**
@@ -198,6 +218,7 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
   const { inicio, fim } = limitesMes(mes, tipo === "nfse");
   let paginas = 0;
   let gravadas = 0;
+  const canceladas = new Set<string>();
   try {
     for (let skip = 0; skip < 50_000; skip += 50) {
       let corpo: unknown;
@@ -210,7 +231,8 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
             DataEmissaoInicio: inicio,
             DataEmissaoFim: fim,
             ...(papel === "emitente" ? { CnpjEmit: documento } : { CnpjDest: documento }),
-            BaixarEventos: false,
+            // Eventos vêm junto para marcar as notas canceladas.
+            BaixarEventos: true,
           },
         });
       } catch (error) {
@@ -220,9 +242,17 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
       }
       const xmls = extrairArquivos(corpo).filter((a) => a.tipo === "xml");
       paginas++;
-      for (const a of xmls) if (await gravarResumo(a.conteudo.toString("utf8"), documento, papel, mes, tipo)) gravadas++;
+      let notasPagina = 0;
+      for (const a of xmls) {
+        if ((await gravarResumo(a.conteudo.toString("utf8"), documento, papel, mes, tipo, canceladas)) === "nota") notasPagina++;
+      }
+      gravadas += notasPagina;
       await prisma.siegBuscaNotas.update({ where: { id: buscaId }, data: { paginas, notas: gravadas } });
-      if (xmls.length < 50) break;
+      // Take=50 vale para as notas; os eventos vêm a mais.
+      if (notasPagina < 50) break;
+    }
+    if (canceladas.size) {
+      await prisma.siegNota.updateMany({ where: { chave: { in: [...canceladas] } }, data: { cancelada: true } });
     }
     await prisma.siegBuscaNotas.update({
       where: { id: buscaId },
@@ -256,6 +286,20 @@ export async function iniciarCapturaNotas(documento: string, mes: string, tipo: 
   return busca;
 }
 
+/** Mesma captura, mas aguardando o fim (usada pela captura noturna, uma por vez). */
+export async function capturarNotasAgora(documento: string, mes: string, tipo: TipoNota, papel: Papel) {
+  const chave = `${documento}|${mes}|${tipo}|${papel}`;
+  if (buscasEmAndamento.has(chave)) return null;
+  const busca = await prisma.siegBuscaNotas.create({ data: { documento, mes, tipo, papel, situacao: "andamento" } });
+  buscasEmAndamento.add(chave);
+  try {
+    await capturarNotas(busca.id, documento, mes, tipo, papel);
+  } finally {
+    buscasEmAndamento.delete(chave);
+  }
+  return prisma.siegBuscaNotas.findUnique({ where: { id: busca.id } });
+}
+
 /** Ao reiniciar o servidor, buscas que estavam "em andamento" morreram junto. */
 export async function encerrarBuscasOrfas(): Promise<void> {
   await prisma.siegBuscaNotas.updateMany({
@@ -267,6 +311,9 @@ export async function encerrarBuscasOrfas(): Promise<void> {
 // ------------------------------------------------------- uma nota (sob demanda)
 
 async function xmlDaNota(chave: string, tipo: TipoNota): Promise<Buffer> {
+  // Já capturada: usa a cópia guardada, sem gastar consulta na SIEG.
+  const guardada = await prisma.siegNota.findUnique({ where: { chave }, select: { xml: true } });
+  if (guardada?.xml) return gunzipSync(guardada.xml);
   const corpo = await chamarSieg("/api/v1/baixar-xml", {
     corpo: { ChaveXml: chave, TipoXml: TIPOS_XML[tipo], BaixarEventos: false },
   });
@@ -330,6 +377,23 @@ export async function eventosNota(chave: string): Promise<EventoNota[]> {
       const r = resumirXml(a.conteudo.toString("utf8"));
       return { tipo: null, descricao: r?.naturezaOperacao ?? "Evento", protocolo: null, data: r?.emissao?.toISOString() ?? null };
     });
+}
+
+/**
+ * ZIP com os XMLs guardados de uma empresa num mês (para importar na
+ * Domínio). Pastas: emitidas/ e recebidas/, um arquivo por chave.
+ */
+export async function zipXmlsMes(documento: string, mes: string): Promise<{ nome: string; conteudo: Buffer; total: number }> {
+  const notas = await prisma.siegNota.findMany({
+    where: { documentoEmpresa: documento, mes, xml: { not: null } },
+    select: { chave: true, papel: true, tipo: true, xml: true },
+    orderBy: [{ papel: "asc" }, { emissao: "asc" }],
+  });
+  const arquivos = notas.map((n) => ({
+    nome: `${n.papel === "emitente" ? "emitidas" : "recebidas"}/${n.tipo}-${n.chave}.xml`,
+    conteudo: gunzipSync(n.xml!),
+  }));
+  return { nome: `xmls-${documento}-${mes}.zip`, conteudo: montarZip(arquivos), total: arquivos.length };
 }
 
 // -------------------------------------------------------------- relatórios

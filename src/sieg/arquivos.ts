@@ -1,7 +1,7 @@
 // Leitura dos arquivos que a SIEG devolve: ZIP em base64 (baixar em lote),
 // XML em base64 ou texto, PDF em base64 (DANFE) e planilhas (relatórios).
 // Sem dependências novas: o ZIP é lido pelo diretório central + zlib.
-import { inflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
 export interface ArquivoSieg {
   nome: string;
@@ -121,7 +121,11 @@ export interface ResumoNota {
   naturezaOperacao: string | null;
   /** Evento (cancelamento etc.), não uma nota. */
   ehEvento: boolean;
+  /** Código do evento (tpEvento): 110111 = cancelamento. Só em eventos. */
+  tipoEvento?: string | null;
 }
+
+export const EVENTO_CANCELAMENTO = "110111";
 
 /** Conteúdo da primeira tag com esse nome (com ou sem prefixo de namespace). */
 function tag(xml: string, nome: string): string | null {
@@ -179,6 +183,7 @@ export function resumirXml(xml: string): ResumoNota | null {
           valor: null,
           naturezaOperacao: texto(primeiraTag(xml, ["descEvento", "xEvento"])),
           ehEvento: true,
+          tipoEvento: primeiraTag(xml, ["tpEvento"]),
         }
       : null;
   }
@@ -276,4 +281,57 @@ export function resumirXml(xml: string): ResumoNota | null {
     };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Monta um ZIP (deflate) com os arquivos dados -- usado para exportar os XMLs
+ * do mês e importar na Domínio. Sem dependências: cabeçalhos locais +
+ * diretório central, como o leitor acima.
+ */
+export function montarZip(arquivos: { nome: string; conteudo: Buffer }[]): Buffer {
+  const partes: Buffer[] = [];
+  const central: Buffer[] = [];
+  let deslocamento = 0;
+  for (const a of arquivos) {
+    const nome = Buffer.from(a.nome, "utf8");
+    const compactado = deflateRawSync(a.conteudo);
+    const crc = crc32(a.conteudo);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // nomes em UTF-8
+    local.writeUInt16LE(8, 8); // deflate
+    local.writeUInt32LE(0, 10); // hora/data
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(compactado.length, 18);
+    local.writeUInt32LE(a.conteudo.length, 22);
+    local.writeUInt16LE(nome.length, 26);
+    local.writeUInt16LE(0, 28);
+    partes.push(local, nome, compactado);
+
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0);
+    c.writeUInt16LE(20, 4);
+    c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(0x0800, 8);
+    c.writeUInt16LE(8, 10);
+    c.writeUInt32LE(0, 12);
+    c.writeUInt32LE(crc, 16);
+    c.writeUInt32LE(compactado.length, 20);
+    c.writeUInt32LE(a.conteudo.length, 24);
+    c.writeUInt16LE(nome.length, 28);
+    c.writeUInt32LE(deslocamento, 42);
+    central.push(c, nome);
+    deslocamento += local.length + nome.length + compactado.length;
+  }
+  const tamanhoCentral = central.reduce((s, b) => s + b.length, 0);
+  const fim = Buffer.alloc(22);
+  fim.writeUInt32LE(0x06054b50, 0);
+  fim.writeUInt16LE(arquivos.length, 8);
+  fim.writeUInt16LE(arquivos.length, 10);
+  fim.writeUInt32LE(tamanhoCentral, 12);
+  fim.writeUInt32LE(deslocamento, 16);
+  return Buffer.concat([...partes, ...central, fim]);
 }

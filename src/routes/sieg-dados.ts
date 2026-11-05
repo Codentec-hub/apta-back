@@ -24,9 +24,10 @@ import {
   TIPOS_XML,
   type TipoNota,
   type TipoRelatorio,
+  zipXmlsMes,
 } from "../sieg/notas.js";
 import { renovarTokenOAuth } from "../sieg/oauth.js";
-import { estadoAgendamento, sincronizacaoCompleta } from "../sieg/agendamento.js";
+import { estadoAgendamento, estadoCapturaNoturna, mesesAbertos, sincronizacaoCompleta } from "../sieg/agendamento.js";
 
 export const siegDadosRouter = Router();
 siegDadosRouter.use("/sieg/dados", autenticar);
@@ -96,7 +97,13 @@ siegDadosRouter.get("/sieg/dados/saude", asyncHandler(async (_req, res) => {
       agendamento: estadoAgendamento(),
       contagens: estadoContagens(),
       ultimaContagemEm: contagens?.atualizadoEm ?? null,
+      captura: {
+        ...estadoCapturaNoturna(),
+        ultimaEm: config?.ultimaCapturaEm ?? null,
+        ultimoResumo: config?.ultimaCapturaResumo ?? null,
+      },
     },
+    corte: await mesesAbertos(),
     dados: { empresasAtivas: empresas, notasCapturadas: notas },
     chamadas24h: chamadas
       .map((c) => ({
@@ -131,7 +138,8 @@ siegDadosRouter.post("/sieg/dados/sincronizar", asyncHandler(async (req, res) =>
     res.status(409).json({ erro: "Já há uma busca completa em andamento" });
     return;
   }
-  void sincronizacaoCompleta().catch((e) => console.error("[sieg] falha na busca completa", e));
+  // Pelo botão a captura não para às 8h: quem clicou quer o resultado agora.
+  void sincronizacaoCompleta(false).catch((e) => console.error("[sieg] falha na busca completa", e));
   res.json({ iniciada: true });
 }));
 
@@ -214,6 +222,7 @@ siegDadosRouter.get("/sieg/dados/notas", asyncHandler(async (req, res) => {
   const [notas, busca] = await Promise.all([
     prisma.siegNota.findMany({
       where: { documentoEmpresa: documento, mes, tipo, papel },
+      omit: { xml: true },
       orderBy: [{ emissao: "desc" }, { numero: "desc" }],
     }),
     prisma.siegBuscaNotas.findFirst({ where: { documento, mes, tipo, papel }, orderBy: { iniciadaEm: "desc" } }),
@@ -233,6 +242,40 @@ siegDadosRouter.post("/sieg/dados/notas/capturar", asyncHandler(async (req, res)
   }
   const { documento, mes, tipo, papel } = parsed.data;
   res.json(await iniciarCapturaNotas(documento, mes, tipo, papel));
+}));
+
+// Data de corte: até esse dia o mês anterior ainda é atualizado de noite.
+siegDadosRouter.put("/sieg/dados/corte", asyncHandler(async (req, res) => {
+  if (!podeAcionar(req)) {
+    res.status(403).json({ erro: "Apenas administradores e gestores podem alterar a data de corte" });
+    return;
+  }
+  const parsed = z.object({ diaCorte: z.number().int().min(1).max(28) }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ erro: "Dia de corte entre 1 e 28" });
+    return;
+  }
+  await prisma.configuracaoSieg.upsert({
+    where: { id: 1 },
+    create: { id: 1, diaCorte: parsed.data.diaCorte },
+    update: { diaCorte: parsed.data.diaCorte },
+  });
+  res.json(await mesesAbertos());
+}));
+
+// ZIP com os XMLs guardados do mês (pastas emitidas/ e recebidas/), para a Domínio.
+siegDadosRouter.get("/sieg/dados/notas/zip", asyncHandler(async (req, res) => {
+  const parsed = z.object({ documento: docSchema, mes: mesSchema }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ erro: "Escolha a empresa e o mês" });
+    return;
+  }
+  const zip = await zipXmlsMes(parsed.data.documento, parsed.data.mes);
+  if (zip.total === 0) {
+    res.status(404).json({ erro: "Nenhum XML guardado desta empresa nesse mês. Busque as notas primeiro." });
+    return;
+  }
+  enviarArquivo(res, zip.nome, zip.conteudo, "application/zip");
 }));
 
 siegDadosRouter.get("/sieg/dados/notas/:chave/xml", asyncHandler(async (req, res) => {

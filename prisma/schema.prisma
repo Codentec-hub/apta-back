@@ -117,6 +117,8 @@ model Cliente {
   atendimentos           Atendimento[]
   conversas              Conversa[]
   lancamentosFinanceiros LancamentoFinanceiro[]
+  relatoriosSaudeFiscal  RelatorioSaudeFiscal[]
+  pendencias             PendenciaCliente[]
 
   @@map("clientes")
 }
@@ -495,6 +497,12 @@ model ConfiguracaoEnvio {
   prefixoAlertaNaoLida String   @default("[Guia não visualizada]") @map("prefixo_alerta_nao_lida")
   // Texto opcional em destaque no topo do e-mail de lembrete.
   avisoCabecalho       String?  @map("aviso_cabecalho")
+  // Relatório mensal de saúde fiscal (gerado e enviado sozinho no dia).
+  saudeFiscalAutomatico Boolean  @default(false) @map("saude_fiscal_automatico")
+  saudeFiscalDia        Int      @default(15) @map("saude_fiscal_dia")
+  saudeFiscalCanais     String[] @default(["email", "whatsapp"]) @map("saude_fiscal_canais")
+  // Último mês (AAAA-MM) já enviado em lote, pra não repetir no mesmo mês.
+  saudeFiscalUltimoLote String?  @map("saude_fiscal_ultimo_lote")
   updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@map("configuracao_envio")
@@ -551,6 +559,12 @@ model ConfiguracaoSieg {
   // Última busca agendada (empresas + contagens) e o resultado dela.
   ultimaSincronizacaoEm   DateTime? @map("ultima_sincronizacao_em")
   ultimaSincronizacaoErro String?   @map("ultima_sincronizacao_erro")
+  // Data de corte: até este dia do mês, o mês anterior ainda é recontado e
+  // recapturado de noite (notas que chegam atrasadas na SIEG, cancelamentos).
+  diaCorte                Int       @default(10) @map("dia_corte")
+  // Resultado da última captura noturna de XMLs.
+  ultimaCapturaEm         DateTime? @map("ultima_captura_em")
+  ultimaCapturaResumo     String?   @map("ultima_captura_resumo")
   updatedAt               DateTime  @updatedAt @map("updated_at")
 
   @@map("configuracao_sieg")
@@ -854,9 +868,15 @@ model SiegNota {
   destinatarioNome      String?   @map("destinatario_nome")
   valor                 Float?
   naturezaOperacao      String?   @map("natureza_operacao")
+  // XML original compactado (gzip) -- base do relatório de saúde fiscal e do
+  // ZIP para importar na Domínio, sem consultar a SIEG de novo.
+  xml                   Bytes?
+  // Marcada por um evento de cancelamento (110111) vindo junto na captura.
+  cancelada             Boolean   @default(false)
   capturadaEm           DateTime  @default(now()) @map("capturada_em")
 
   @@index([documentoEmpresa, mes])
+  @@index([documentoEmpresa, mes, tipo, papel])
   @@map("sieg_notas")
 }
 
@@ -889,4 +909,47 @@ model SiegChamada {
 
   @@index([criadoEm])
   @@map("sieg_chamadas")
+}
+
+// Relatório mensal de saúde fiscal enviado ao cliente ("aqui seu relatório
+// de saúde fiscal"). Os números ficam congelados em `dados` no momento em que
+// foi gerado; o cliente abre pelo link público /saude-fiscal/<token>.
+model RelatorioSaudeFiscal {
+  id         String    @id @default(uuid())
+  numero     Int       @unique @default(autoincrement())
+  token      String    @unique
+  mes        String // AAAA-MM de referência
+  dados      Json
+  automatico Boolean   @default(false)
+  // [{ canal, destino, nome, status: "enviado"|"falha", erro?, em }]
+  envios     Json      @default("[]")
+  lidoEm     DateTime? @map("lido_em")
+  acessos    Int       @default(0)
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  clienteId String   @map("cliente_id")
+  cliente   Cliente  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  usuarioId String?  @map("usuario_id")
+
+  @@index([clienteId, mes])
+  @@map("relatorios_saude_fiscal")
+}
+
+// Pendência do cliente registrada pela equipe (documento faltando, extrato,
+// assinatura...). Junto com as automáticas (certificado, guias não abertas),
+// vai no relatório de saúde fiscal e pode ser enviada quando o cliente pedir.
+model PendenciaCliente {
+  id          String    @id @default(uuid())
+  descricao   String
+  // Prazo combinado com o cliente (opcional).
+  prazo       DateTime? @db.Date
+  resolvidaEm DateTime? @map("resolvida_em")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  usuarioId String? @map("usuario_id")
+
+  @@index([clienteId])
+  @@map("pendencias_cliente")
 }
