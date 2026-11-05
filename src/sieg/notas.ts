@@ -5,7 +5,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 import { prisma } from "../prisma.js";
 import { descreverResposta, EVENTOS_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
-import { chamarSieg, ErroSieg } from "./cliente.js";
+import { chamarSieg, ErroSieg, mensagemSieg } from "./cliente.js";
 
 export const TIPOS_XML = { nfe: 1, cte: 2, nfse: 3, nfce: 4, cfe: 5 } as const;
 export type TipoNota = keyof typeof TIPOS_XML;
@@ -524,7 +524,29 @@ export async function gerarRelatorio(
   tipo: TipoNota,
 ): Promise<ArquivoSieg> {
   const [ano, m] = mes.split("-").map(Number) as [number, number];
-  const corpo = await chamarSieg<{ UrlDownload?: string }>("/api/v1/relatorios-pre-configurados", {
+  const nomeRel = `${RELATORIOS[relatorio].nome} de ${TIPO_LABEL[tipo]}`;
+  let corpo: { UrlDownload?: string } | null;
+  try {
+    corpo = await pedirRelatorio(documento, relatorio, tipo, m, ano);
+  } catch (error) {
+    // A SIEG responde 500 "Erro ao gerar relatório" quando não há o que
+    // relatar (ex.: monofásico sem produto monofásico, mês sem notas desse tipo).
+    if (error instanceof ErroSieg && (error.status ?? 0) >= 500) {
+      throw new ErroSieg(
+        `A SIEG não conseguiu gerar o ${nomeRel} de ${mes.slice(5)}/${ano} (${error.message.replace(/^SIEG respondeu /, "")}). ` +
+          "Costuma acontecer quando a empresa não tem notas desse tipo no mês ou, no monofásico, não vendeu produto monofásico. Tente o Relatório básico ou outro mês.",
+        error.status,
+      );
+    }
+    throw error;
+  }
+  return arquivoDoRelatorio(corpo, documento, mes, relatorio, nomeRel);
+}
+
+const TIPO_LABEL: Record<TipoNota, string> = { nfe: "NF-e", nfce: "NFC-e", cte: "CT-e", nfse: "NFS-e", cfe: "CF-e" };
+
+async function pedirRelatorio(documento: string, relatorio: TipoRelatorio, tipo: TipoNota, m: number, ano: number) {
+  return chamarSieg<{ UrlDownload?: string } | null>("/api/v1/relatorios-pre-configurados", {
     // A API real valida os nomes em português (TipoXml, Mes, Ano -- erro 400
     // visto em produção em 04/11/2026), diferente do Swagger (XmlType, Month,
     // Year). Mandamos os dois; campos a mais são ignorados.
@@ -540,6 +562,15 @@ export async function gerarRelatorio(
       Year: ano,
     },
   });
+}
+
+async function arquivoDoRelatorio(
+  corpo: { UrlDownload?: string } | null,
+  documento: string,
+  mes: string,
+  relatorio: TipoRelatorio,
+  nomeRel: string,
+): Promise<ArquivoSieg> {
   // A doc fala em base64 e o Swagger em UrlDownload: aceita os dois.
   if (corpo && typeof corpo === "object" && typeof corpo.UrlDownload === "string" && corpo.UrlDownload.startsWith("http")) {
     const r = await fetch(corpo.UrlDownload, { signal: AbortSignal.timeout(60_000) });
@@ -548,7 +579,12 @@ export async function gerarRelatorio(
     return { nome: `relatorio-${relatorio}-${documento}-${mes}.xlsx`, conteudo: bin, tipo: "planilha" };
   }
   const arquivo = extrairArquivos(corpo)[0];
-  if (!arquivo) throw new Error("A SIEG não devolveu o arquivo do relatório (talvez não haja notas nesse mês)");
+  if (!arquivo) {
+    throw new ErroSieg(
+      `A SIEG não devolveu o arquivo do ${nomeRel} (${mensagemSieg(corpo) ?? descreverResposta(corpo)}). Talvez não haja notas desse tipo no mês.`,
+      null,
+    );
+  }
   const ext = arquivo.nome.split(".").pop() ?? "xlsx";
   return { ...arquivo, nome: `relatorio-${relatorio}-${documento}-${mes}.${ext}` };
 }
