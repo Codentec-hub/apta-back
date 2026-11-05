@@ -142,12 +142,23 @@ export async function chamarSieg<T = unknown>(rota: string, opcoes: Opcoes = {})
       throw new ErroSieg(msg, null);
     }
 
-    const texto = await resposta.text();
-    let corpo: unknown = texto;
-    try {
-      corpo = texto ? JSON.parse(texto) : null;
-    } catch {
-      // resposta não-JSON (ex.: base64 puro) -- fica como texto
+    // Lido como bytes: a SIEG às vezes devolve o arquivo (ZIP/PDF) em binário
+    // direto, e ler isso como texto corrompe o conteúdo (visto em produção em
+    // 05/11/2026 no baixar-xmls: "PK..." -- um ZIP cru).
+    const bytes = Buffer.from(await resposta.arrayBuffer());
+    const binario =
+      (bytes[0] === 0x50 && bytes[1] === 0x4b) || // ZIP
+      (bytes[0] === 0x1f && bytes[1] === 0x8b) || // gzip
+      bytes.subarray(0, 4).toString("latin1") === "%PDF" ||
+      /application\/(zip|octet-stream|pdf|x-zip)/i.test(resposta.headers.get("content-type") ?? "");
+    const texto = binario ? "" : bytes.toString("utf8");
+    let corpo: unknown = binario ? bytes : texto;
+    if (!binario) {
+      try {
+        corpo = texto ? JSON.parse(texto) : null;
+      } catch {
+        // resposta não-JSON (ex.: base64 puro) -- fica como texto
+      }
     }
 
     if (resposta.status === 429 && tentativa < maxTentativas) {

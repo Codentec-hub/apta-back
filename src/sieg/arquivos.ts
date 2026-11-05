@@ -94,14 +94,20 @@ export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
   const arquivos: ArquivoSieg[] = [];
   const visitar = (valor: unknown, nome: string, profundidade: number) => {
     if (profundidade > 6 || valor === null || valor === undefined) return;
-    if (typeof valor === "string") {
-      const texto = valor.trim();
-      if (texto.startsWith("<")) {
-        arquivos.push({ nome: `${nome}.xml`, conteudo: Buffer.from(texto, "utf8"), tipo: "xml" });
-        return;
+    // Resposta binária (a SIEG manda o ZIP direto, sem base64 nem JSON).
+    if (Buffer.isBuffer(valor) || typeof valor === "string") {
+      let bin: Buffer;
+      if (Buffer.isBuffer(valor)) {
+        bin = valor;
+      } else {
+        const texto = valor.trim();
+        if (texto.startsWith("<")) {
+          arquivos.push({ nome: `${nome}.xml`, conteudo: Buffer.from(texto, "utf8"), tipo: "xml" });
+          return;
+        }
+        if (!pareceBase64(texto)) return;
+        bin = Buffer.from(texto, "base64");
       }
-      if (!pareceBase64(texto)) return;
-      let bin: Buffer = Buffer.from(texto, "base64");
       // Conteúdo compactado em gzip (1f 8b): abre antes de classificar.
       if (bin[0] === 0x1f && bin[1] === 0x8b) {
         try {
@@ -386,15 +392,17 @@ export function montarZip(arquivos: { nome: string; conteudo: Buffer }[]): Buffe
  */
 export function descreverResposta(corpo: unknown): string {
   const tipoDe = (v: unknown) => (Array.isArray(v) ? `lista(${v.length})` : v === null ? "null" : typeof v);
-  const partes: string[] = [`corpo: ${tipoDe(corpo)}`];
+  const partes: string[] = [`corpo: ${Buffer.isBuffer(corpo) ? `binário(${corpo.length} bytes)` : tipoDe(corpo)}`];
   if (typeof corpo === "string") partes.push(`início "${corpo.slice(0, 40)}"`);
-  if (corpo && typeof corpo === "object" && !Array.isArray(corpo)) {
+  if (corpo && typeof corpo === "object" && !Array.isArray(corpo) && !Buffer.isBuffer(corpo)) {
     const o = corpo as Record<string, unknown>;
     partes.push(`chaves {${Object.entries(o).map(([k, v]) => `${k}: ${tipoDe(v)}`).join(", ")}}`);
     const msg = ["message", "Message", "ErrorMessage", "Mensagens"].map((k) => o[k]).find((v) => v && (typeof v === "string" || Array.isArray(v)));
     if (msg) partes.push(`mensagem "${String(msg).slice(0, 120)}"`);
   }
-  const lista = Array.isArray(corpo)
+  const lista = Buffer.isBuffer(corpo)
+    ? null
+    : Array.isArray(corpo)
     ? corpo
     : ((corpo as Record<string, unknown> | null)?.["data"] ?? (corpo as Record<string, unknown> | null)?.["Data"]);
   if (Array.isArray(lista) && lista.length) {
