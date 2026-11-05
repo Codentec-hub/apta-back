@@ -181,6 +181,7 @@ async function gravarResumo(
   mes: string,
   tipoPadrao: TipoNota,
   canceladas: Set<string>,
+  chaves?: Set<string>,
 ): Promise<"nota" | "evento" | null> {
   const r = resumirXml(xml);
   if (!r || !r.chave) return null;
@@ -206,7 +207,28 @@ async function gravarResumo(
     xml: gzipSync(Buffer.from(xml, "utf8")),
   };
   await prisma.siegNota.upsert({ where: { chave: r.chave }, create: { chave: r.chave, ...dados }, update: dados });
+  chaves?.add(r.chave);
   return "nota";
+}
+
+/**
+ * Se a SIEG contou mais notas do que a busca trouxe, explica o que veio
+ * (aparece na tela ao lado de "Última busca").
+ */
+async function avisoIncompleto(
+  documento: string,
+  mes: string,
+  tipo: TipoNota,
+  papel: Papel,
+  stats: { arquivos: number; xmls: number; eventos: number; naoReconhecidos: number; chaves: Set<string> },
+  paginas: number,
+): Promise<string | null> {
+  const contagem = await prisma.siegContagem.findUnique({ where: { documento_mes_papel: { documento, mes, papel } } });
+  const contadas = contagem?.[tipo] ?? 0;
+  if (stats.chaves.size >= contadas) return null;
+  return `A SIEG contou ${contadas} e entregou ${stats.arquivos} arquivo(s) em ${paginas} página(s): ${stats.xmls} XML, ${
+    stats.chaves.size
+  } nota(s) diferentes, ${stats.eventos} evento(s), ${stats.naoReconhecidos} não reconhecido(s).`;
 }
 
 /**
@@ -222,6 +244,7 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
   // Quando a busca termina sem nenhuma nota, guarda o que a SIEG respondeu na
   // 1ª página (aparece na tela) -- para achar diferença de formato da API real.
   let diagnostico: string | null = null;
+  const stats = { arquivos: 0, xmls: 0, eventos: 0, naoReconhecidos: 0, chaves: new Set<string>() };
   try {
     for (let skip = 0; skip < 50_000; skip += 50) {
       let corpo: unknown;
@@ -250,12 +273,18 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
         }
         throw error;
       }
-      const xmls = extrairArquivos(corpo).filter((a) => a.tipo === "xml");
+      const todos = extrairArquivos(corpo);
+      const xmls = todos.filter((a) => a.tipo === "xml");
+      stats.arquivos += todos.length;
+      stats.xmls += xmls.length;
       if (skip === 0 && xmls.length === 0) diagnostico = descreverResposta(corpo);
       paginas++;
       let notasPagina = 0;
       for (const a of xmls) {
-        if ((await gravarResumo(a.conteudo.toString("utf8"), documento, papel, mes, tipo, canceladas)) === "nota") notasPagina++;
+        const r = await gravarResumo(a.conteudo.toString("utf8"), documento, papel, mes, tipo, canceladas, stats.chaves);
+        if (r === "nota") notasPagina++;
+        else if (r === "evento") stats.eventos++;
+        else stats.naoReconhecidos++;
       }
       if (skip === 0 && notasPagina === 0 && xmls.length > 0) {
         diagnostico = `${xmls.length} XML(s) recebidos, nenhum reconhecido como nota. ${descreverResposta(corpo)}`;
@@ -274,7 +303,10 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
         situacao: "concluida",
         paginas,
         notas: gravadas,
-        erro: gravadas === 0 && diagnostico ? `Resposta da SIEG: ${diagnostico}`.slice(0, 1000) : null,
+        erro:
+          gravadas === 0 && diagnostico
+            ? `Resposta da SIEG: ${diagnostico}`.slice(0, 1000)
+            : await avisoIncompleto(documento, mes, tipo, papel, stats, paginas),
         concluidaEm: new Date(),
       },
     });

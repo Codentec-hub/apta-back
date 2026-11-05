@@ -306,10 +306,12 @@ export function resumirXml(xml: string): ResumoNota | null {
 
   // NFS-e (padrão nacional e ABRASF/municipais)
   if (/nfse|CompNfse|InfNfse|infNFSe|Nfse/i.test(xml)) {
-    const prestador = tag(xml, "prest") ?? tag(xml, "PrestadorServico") ?? tag(xml, "Prestador") ?? tag(xml, "emit");
+    // Padrão nacional: <emit> tem CNPJ e nome; <prest> (dentro da DPS) às vezes só o CNPJ.
+    const emitNacional = tag(xml, "emit");
+    const prestador = tag(xml, "prest") ?? tag(xml, "PrestadorServico") ?? tag(xml, "Prestador") ?? emitNacional;
     const tomador = tag(xml, "toma") ?? tag(xml, "TomadorServico") ?? tag(xml, "Tomador");
     const numeroNota = primeiraTag(xml, ["nNFSe", "Numero", "NumeroNfse"]);
-    const emitenteDocumento = docDe(prestador);
+    const emitenteDocumento = docDe(emitNacional) ?? docDe(prestador);
     const chave =
       digitos(/Id="NFS(\d{40,60})"/.exec(xml)?.[1] ?? null) ??
       digitos(primeiraTag(xml, ["chNFSe", "ChaveAcesso"])) ??
@@ -321,7 +323,8 @@ export function resumirXml(xml: string): ResumoNota | null {
       numero: numeroNota,
       serie: primeiraTag(xml, ["serie", "Serie"]),
       emitenteDocumento,
-      emitenteNome: texto(primeiraTag(prestador, ["xNome", "RazaoSocial", "NomeFantasia"])),
+      emitenteNome:
+        texto(primeiraTag(emitNacional, ["xNome"])) ?? texto(primeiraTag(prestador, ["xNome", "RazaoSocial", "NomeFantasia"])),
       destinatarioDocumento: docDe(tomador),
       destinatarioNome: texto(primeiraTag(tomador, ["xNome", "RazaoSocial"])),
       valor: numero(primeiraTag(xml, ["vLiq", "vServ", "ValorLiquidoNfse", "ValorServicos"])),
