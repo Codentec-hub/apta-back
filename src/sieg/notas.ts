@@ -4,7 +4,7 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { prisma } from "../prisma.js";
-import { EVENTO_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
+import { descreverResposta, EVENTO_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
 import { chamarSieg, ErroSieg } from "./cliente.js";
 
 export const TIPOS_XML = { nfe: 1, cte: 2, nfse: 3, nfce: 4, cfe: 5 } as const;
@@ -219,13 +219,19 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
   let paginas = 0;
   let gravadas = 0;
   const canceladas = new Set<string>();
+  // Quando a busca termina sem nenhuma nota, guarda o que a SIEG respondeu na
+  // 1ª página (aparece na tela) -- para achar diferença de formato da API real.
+  let diagnostico: string | null = null;
   try {
     for (let skip = 0; skip < 50_000; skip += 50) {
       let corpo: unknown;
       try {
         corpo = await chamarSieg("/api/v1/baixar-xmls", {
+          // A documentação da SIEG tem duas versões com nomes diferentes
+          // (TipoXml/XmlType, BaixarEventos/Downloadevent); mandamos os dois.
           corpo: {
             TipoXml: TIPOS_XML[tipo],
+            XmlType: TIPOS_XML[tipo],
             Take: 50,
             Skip: skip,
             DataEmissaoInicio: inicio,
@@ -233,18 +239,26 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
             ...(papel === "emitente" ? { CnpjEmit: documento } : { CnpjDest: documento }),
             // Eventos vêm junto para marcar as notas canceladas.
             BaixarEventos: true,
+            Downloadevent: true,
           },
         });
       } catch (error) {
         // Fim da lista ou mês sem notas: a SIEG costuma responder 404.
-        if (error instanceof ErroSieg && error.status === 404) break;
+        if (error instanceof ErroSieg && error.status === 404) {
+          if (skip === 0) diagnostico = error.message.slice(0, 300);
+          break;
+        }
         throw error;
       }
       const xmls = extrairArquivos(corpo).filter((a) => a.tipo === "xml");
+      if (skip === 0 && xmls.length === 0) diagnostico = descreverResposta(corpo);
       paginas++;
       let notasPagina = 0;
       for (const a of xmls) {
         if ((await gravarResumo(a.conteudo.toString("utf8"), documento, papel, mes, tipo, canceladas)) === "nota") notasPagina++;
+      }
+      if (skip === 0 && notasPagina === 0 && xmls.length > 0) {
+        diagnostico = `${xmls.length} XML(s) recebidos, nenhum reconhecido como nota. ${descreverResposta(corpo)}`;
       }
       gravadas += notasPagina;
       await prisma.siegBuscaNotas.update({ where: { id: buscaId }, data: { paginas, notas: gravadas } });
@@ -256,7 +270,13 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
     }
     await prisma.siegBuscaNotas.update({
       where: { id: buscaId },
-      data: { situacao: "concluida", paginas, notas: gravadas, concluidaEm: new Date() },
+      data: {
+        situacao: "concluida",
+        paginas,
+        notas: gravadas,
+        erro: gravadas === 0 && diagnostico ? `Resposta da SIEG: ${diagnostico}`.slice(0, 1000) : null,
+        concluidaEm: new Date(),
+      },
     });
   } catch (error) {
     await prisma.siegBuscaNotas.update({

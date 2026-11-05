@@ -1,7 +1,7 @@
 // Leitura dos arquivos que a SIEG devolve: ZIP em base64 (baixar em lote),
 // XML em base64 ou texto, PDF em base64 (DANFE) e planilhas (relatórios).
 // Sem dependências novas: o ZIP é lido pelo diretório central + zlib.
-import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, gunzipSync, inflateRawSync } from "node:zlib";
 
 export interface ArquivoSieg {
   nome: string;
@@ -68,7 +68,15 @@ export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
         return;
       }
       if (!pareceBase64(texto)) return;
-      const bin = Buffer.from(texto, "base64");
+      let bin = Buffer.from(texto, "base64");
+      // Conteúdo compactado em gzip (1f 8b): abre antes de classificar.
+      if (bin[0] === 0x1f && bin[1] === 0x8b) {
+        try {
+          bin = gunzipSync(bin);
+        } catch {
+          return;
+        }
+      }
       const tipo = classificar(bin);
       if (tipo === "zip") {
         let entradas: { nome: string; conteudo: Buffer }[] = [];
@@ -334,4 +342,42 @@ export function montarZip(arquivos: { nome: string; conteudo: Buffer }[]): Buffe
   fim.writeUInt32LE(tamanhoCentral, 12);
   fim.writeUInt32LE(deslocamento, 16);
   return Buffer.concat([...partes, ...central, fim]);
+}
+
+/**
+ * Descrição curta de uma resposta da SIEG (formato, chaves, arquivos achados),
+ * para diagnosticar quando uma busca termina sem nenhuma nota. Não inclui o
+ * conteúdo das notas.
+ */
+export function descreverResposta(corpo: unknown): string {
+  const tipoDe = (v: unknown) => (Array.isArray(v) ? `lista(${v.length})` : v === null ? "null" : typeof v);
+  const partes: string[] = [`corpo: ${tipoDe(corpo)}`];
+  if (typeof corpo === "string") partes.push(`início "${corpo.slice(0, 40)}"`);
+  if (corpo && typeof corpo === "object" && !Array.isArray(corpo)) {
+    const o = corpo as Record<string, unknown>;
+    partes.push(`chaves {${Object.entries(o).map(([k, v]) => `${k}: ${tipoDe(v)}`).join(", ")}}`);
+    const msg = ["message", "Message", "ErrorMessage", "Mensagens"].map((k) => o[k]).find((v) => v && (typeof v === "string" || Array.isArray(v)));
+    if (msg) partes.push(`mensagem "${String(msg).slice(0, 120)}"`);
+  }
+  const lista = Array.isArray(corpo)
+    ? corpo
+    : ((corpo as Record<string, unknown> | null)?.["data"] ?? (corpo as Record<string, unknown> | null)?.["Data"]);
+  if (Array.isArray(lista) && lista.length) {
+    const p = lista[0];
+    partes.push(
+      `1º item: ${tipoDe(p)}${
+        typeof p === "string"
+          ? ` de ${p.length} caracteres, início "${p.slice(0, 12)}"`
+          : p && typeof p === "object"
+            ? ` {${Object.keys(p).slice(0, 12).join(", ")}}`
+            : ""
+      }`,
+    );
+  }
+  const arquivos = extrairArquivos(corpo);
+  const porTipo = arquivos.reduce<Record<string, number>>((acc, a) => ({ ...acc, [a.tipo]: (acc[a.tipo] ?? 0) + 1 }), {});
+  partes.push(`arquivos achados: ${arquivos.length ? JSON.stringify(porTipo) : "nenhum"}`);
+  const xml = arquivos.find((a) => a.tipo === "xml");
+  if (xml) partes.push(`1º XML começa com "${xml.conteudo.subarray(0, 80).toString("utf8").replace(/\s+/g, " ")}"`);
+  return partes.join(" · ").slice(0, 900);
 }
