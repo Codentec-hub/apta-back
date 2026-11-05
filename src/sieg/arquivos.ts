@@ -175,6 +175,8 @@ export interface ResumoNota {
 }
 
 export const EVENTO_CANCELAMENTO = "110111";
+/** Cancelamento: NF-e/CT-e (110111) e NFS-e nacional (101101; 105102 = por substituição). */
+export const EVENTOS_CANCELAMENTO = new Set(["110111", "101101", "105102"]);
 
 /** Conteúdo da primeira tag com esse nome (com ou sem prefixo de namespace). */
 function tag(xml: string, nome: string): string | null {
@@ -215,9 +217,11 @@ const texto = (v: string | null) =>
 const docDe = (bloco: string | null) => digitos(primeiraTag(bloco, ["CNPJ", "Cnpj", "CPF", "Cpf"]));
 
 export function resumirXml(xml: string): ResumoNota | null {
-  const ehEvento = /<(?:[\w-]+:)?(procEventoNFe|procEventoCTe|evento|eventoCTe)[\s>]/.test(xml) && !/<(?:[\w-]+:)?infNFe[\s>]/.test(xml);
+  const ehEvento =
+    /<(?:[\w-]+:)?(procEventoNFe|procEventoCTe|evento|eventoCTe|pedRegEvento|infPedReg)[\s>]/.test(xml) &&
+    !/<(?:[\w-]+:)?(infNFe|infNFSe|infCte)[\s>]/.test(xml);
   if (ehEvento) {
-    const chave = digitos(primeiraTag(xml, ["chNFe", "chCTe"]));
+    const chave = digitos(primeiraTag(xml, ["chNFe", "chCTe", "chNFSe"]));
     return chave
       ? {
           chave,
@@ -232,7 +236,7 @@ export function resumirXml(xml: string): ResumoNota | null {
           valor: null,
           naturezaOperacao: texto(primeiraTag(xml, ["descEvento", "xEvento"])),
           ehEvento: true,
-          tipoEvento: primeiraTag(xml, ["tpEvento"]),
+          tipoEvento: primeiraTag(xml, ["tpEvento"]) ?? /<(?:[\w-]+:)?e(\d{6})[\s>]/.exec(xml)?.[1] ?? null,
         }
       : null;
   }

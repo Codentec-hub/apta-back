@@ -4,7 +4,7 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { prisma } from "../prisma.js";
-import { descreverResposta, EVENTO_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
+import { descreverResposta, EVENTOS_CANCELAMENTO, extrairArquivos, montarZip, resumirXml, type ArquivoSieg } from "./arquivos.js";
 import { chamarSieg, ErroSieg } from "./cliente.js";
 
 export const TIPOS_XML = { nfe: 1, cte: 2, nfse: 3, nfce: 4, cfe: 5 } as const;
@@ -187,7 +187,7 @@ async function gravarResumo(
   if (!r || !r.chave) return null;
   if (r.ehEvento) {
     // Aplicado no fim da captura: o evento pode vir antes da nota.
-    if (r.tipoEvento === EVENTO_CANCELAMENTO) canceladas.add(r.chave);
+    if (r.tipoEvento && EVENTOS_CANCELAMENTO.has(r.tipoEvento)) canceladas.add(r.chave);
     return "evento";
   }
   const dados = {
@@ -222,13 +222,18 @@ async function avisoIncompleto(
   papel: Papel,
   stats: { arquivos: number; xmls: number; eventos: number; naoReconhecidos: number; chaves: Set<string> },
   paginas: number,
+  porFiltro: string[] = [],
 ): Promise<string | null> {
   const contagem = await prisma.siegContagem.findUnique({ where: { documento_mes_papel: { documento, mes, papel } } });
   const contadas = contagem?.[tipo] ?? 0;
-  if (stats.chaves.size >= contadas) return null;
+  if (stats.chaves.size >= contadas) {
+    return porFiltro.length > 1 ? `Completa. Notas novas por filtro: ${porFiltro.join(", ")}.` : null;
+  }
   return `A SIEG contou ${contadas} e entregou ${stats.arquivos} arquivo(s) em ${paginas} página(s): ${stats.xmls} XML, ${
     stats.chaves.size
-  } nota(s) diferentes, ${stats.eventos} evento(s), ${stats.naoReconhecidos} não reconhecido(s).`;
+  } nota(s) diferentes, ${stats.eventos} evento(s), ${stats.naoReconhecidos} não reconhecido(s).${
+    porFiltro.length > 1 ? ` Notas novas por filtro: ${porFiltro.join(", ")}.` : ""
+  }`;
 }
 
 /**
@@ -245,7 +250,11 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
   // 1ª página (aparece na tela) -- para achar diferença de formato da API real.
   let diagnostico: string | null = null;
   const stats = { arquivos: 0, xmls: 0, eventos: 0, naoReconhecidos: 0, chaves: new Set<string>() };
-  try {
+  const porFiltro: string[] = [];
+
+  /** Percorre as páginas de um filtro; devolve quantas notas novas trouxe. */
+  const percorrer = async (filtro: Record<string, unknown>, primeiro: boolean): Promise<number> => {
+    const antes = stats.chaves.size;
     for (let skip = 0; skip < 50_000; skip += 50) {
       let corpo: unknown;
       try {
@@ -257,9 +266,7 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
             XmlType: TIPOS_XML[tipo],
             Take: 50,
             Skip: skip,
-            DataEmissaoInicio: inicio,
-            DataEmissaoFim: fim,
-            ...(papel === "emitente" ? { CnpjEmit: documento } : { CnpjDest: documento }),
+            ...filtro,
             // Eventos vêm junto para marcar as notas canceladas.
             BaixarEventos: true,
             Downloadevent: true,
@@ -268,16 +275,18 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
       } catch (error) {
         // Fim da lista ou mês sem notas: a SIEG costuma responder 404.
         if (error instanceof ErroSieg && error.status === 404) {
-          if (skip === 0) diagnostico = error.message.slice(0, 300);
+          if (primeiro && skip === 0) diagnostico = error.message.slice(0, 300);
           break;
         }
+        // Filtro alternativo recusado pela SIEG: só não ajuda.
+        if (!primeiro && error instanceof ErroSieg && error.status === 400) break;
         throw error;
       }
       const todos = extrairArquivos(corpo);
       const xmls = todos.filter((a) => a.tipo === "xml");
       stats.arquivos += todos.length;
       stats.xmls += xmls.length;
-      if (skip === 0 && xmls.length === 0) diagnostico = descreverResposta(corpo);
+      if (primeiro && skip === 0 && xmls.length === 0) diagnostico = descreverResposta(corpo);
       paginas++;
       let notasPagina = 0;
       for (const a of xmls) {
@@ -286,13 +295,35 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
         else if (r === "evento") stats.eventos++;
         else stats.naoReconhecidos++;
       }
-      if (skip === 0 && notasPagina === 0 && xmls.length > 0) {
+      if (primeiro && skip === 0 && notasPagina === 0 && xmls.length > 0) {
         diagnostico = `${xmls.length} XML(s) recebidos, nenhum reconhecido como nota. ${descreverResposta(corpo)}`;
       }
-      gravadas += notasPagina;
+      gravadas = stats.chaves.size;
       await prisma.siegBuscaNotas.update({ where: { id: buscaId }, data: { paginas, notas: gravadas } });
       // Take=50 vale para as notas; os eventos vêm a mais.
       if (notasPagina < 50) break;
+    }
+    return stats.chaves.size - antes;
+  };
+
+  try {
+    const cnpj = papel === "emitente" ? { CnpjEmit: documento } : { CnpjDest: documento };
+    porFiltro.push(`emissão: ${await percorrer({ DataEmissaoInicio: inicio, DataEmissaoFim: fim, ...cnpj }, true)}`);
+
+    // NFS-e: a contagem da SIEG às vezes passa muito do que o download por data
+    // de emissão entrega (visto em produção: 31 contadas, 1 entregue). Tenta
+    // por data de envio à SIEG e, nas recebidas, pelo CNPJ como tomador.
+    if (tipo === "nfse") {
+      const contagem = await prisma.siegContagem.findUnique({ where: { documento_mes_papel: { documento, mes, papel } } });
+      const contadas = contagem?.nfse ?? 0;
+      if (stats.chaves.size < contadas) {
+        porFiltro.push(`envio à SIEG: ${await percorrer({ DataUploadInicio: inicio, DataUploadFim: fim, ...cnpj }, false)}`);
+      }
+      if (papel === "destinatario" && stats.chaves.size < contadas) {
+        porFiltro.push(
+          `tomador: ${await percorrer({ DataEmissaoInicio: inicio, DataEmissaoFim: fim, CnpjTom: documento }, false)}`,
+        );
+      }
     }
     if (canceladas.size) {
       await prisma.siegNota.updateMany({ where: { chave: { in: [...canceladas] } }, data: { cancelada: true } });
@@ -306,7 +337,7 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
         erro:
           gravadas === 0 && diagnostico
             ? `Resposta da SIEG: ${diagnostico}`.slice(0, 1000)
-            : await avisoIncompleto(documento, mes, tipo, papel, stats, paginas),
+            : await avisoIncompleto(documento, mes, tipo, papel, stats, paginas, porFiltro),
         concluidaEm: new Date(),
       },
     });
