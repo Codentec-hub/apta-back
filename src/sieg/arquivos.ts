@@ -175,8 +175,8 @@ export interface ResumoNota {
 }
 
 export const EVENTO_CANCELAMENTO = "110111";
-/** Cancelamento: NF-e/CT-e (110111) e NFS-e nacional (101101; 105102 = por substituição). */
-export const EVENTOS_CANCELAMENTO = new Set(["110111", "101101", "105102"]);
+/** Cancelamentos (lista da doc do baixar-xmls): NF-e 110111/110112, NFS-e 101101/105102/105104, CT-e 610601. */
+export const EVENTOS_CANCELAMENTO = new Set(["110111", "110112", "101101", "105102", "105104", "610601"]);
 
 /** Conteúdo da primeira tag com esse nome (com ou sem prefixo de namespace). */
 function tag(xml: string, nome: string): string | null {

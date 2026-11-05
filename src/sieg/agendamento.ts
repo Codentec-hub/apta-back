@@ -104,6 +104,15 @@ export async function capturasPendentes(meses: string[]): Promise<Pendente[]> {
     }),
   ]);
   const nomes = new Map(empresas.map((e) => [e.documento, e.nome]));
+  // Combinações em que a SIEG conta mais do que entrega no download (visto
+  // com NFS-e): depois de uma busca completa sem sucesso, só tenta de novo
+  // após 7 dias -- para não gastar a noite repetindo a mesma consulta.
+  const seteDias = new Date(Date.now() - 7 * 86_400_000);
+  const travadas = await prisma.siegBuscaNotas.findMany({
+    where: { mes: { in: meses }, situacao: "concluida", concluidaEm: { gte: seteDias }, OR: [{ erro: { startsWith: "A SIEG contou" } }, { erro: { startsWith: "Resposta da SIEG" } }] },
+    select: { documento: true, mes: true, tipo: true, papel: true },
+  });
+  const pular = new Set(travadas.map((b) => `${b.documento}|${b.mes}|${b.tipo}|${b.papel}`));
   const ja = new Map(guardadas.map((g) => [`${g.documentoEmpresa}|${g.mes}|${g.tipo}|${g.papel}`, g._count._all]));
   const saida: Pendente[] = [];
   for (const c of contagens) {
@@ -112,7 +121,7 @@ export async function capturasPendentes(meses: string[]): Promise<Pendente[]> {
     for (const tipo of Object.keys(TIPOS_XML) as TipoNota[]) {
       const contadas = c[tipo];
       const faltam = contadas - (ja.get(`${c.documento}|${c.mes}|${tipo}|${c.papel}`) ?? 0);
-      if (faltam > 0) saida.push({ documento: c.documento, nome, mes: c.mes, tipo, papel: c.papel as Papel, faltam });
+      if (faltam > 0 && !pular.has(`${c.documento}|${c.mes}|${tipo}|${c.papel}`)) saida.push({ documento: c.documento, nome, mes: c.mes, tipo, papel: c.papel as Papel, faltam });
     }
   }
   // Mês mais recente primeiro; dentro dele, quem tem menos para baixar
