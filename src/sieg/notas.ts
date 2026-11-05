@@ -439,29 +439,53 @@ export interface EventoNota {
   data: string | null;
 }
 
+const NOME_EVENTO: Record<string, string> = {
+  "110110": "Carta de correção",
+  "110111": "Cancelamento",
+  "110112": "Cancelamento por substituição",
+  "210200": "Confirmação da operação (destinatário)",
+  "210210": "Ciência da operação (destinatário)",
+  "210220": "Desconhecimento da operação (destinatário)",
+  "210240": "Operação não realizada (destinatário)",
+  "101101": "Cancelamento da NFS-e",
+  "105102": "Cancelamento da NFS-e por substituição",
+  "610601": "Cancelamento do CT-e",
+  "790700": "Averbação para exportação",
+};
+
+/**
+ * Eventos da nota (cancelamento, carta de correção, manifestação...). Vêm junto
+ * com o XML da nota (baixar-xml com BaixarEventos) numa chamada só; a rota
+ * baixar-eventos exige o tipo do evento ("TipoEvento: Certifique-se de informar
+ * o evento", 400 visto em produção), então fica só de reserva.
+ */
 export async function eventosNota(chave: string): Promise<EventoNota[]> {
-  let corpo: { Eventos?: { TipoEvento?: number; Descricao?: string; Protocolo?: string; DataEvento?: string }[] };
+  const nota = await prisma.siegNota.findUnique({ where: { chave }, select: { tipo: true } });
+  const tipo = (nota?.tipo as TipoNota | undefined) ?? "nfe";
+  let corpo: unknown;
   try {
-    corpo = await chamarSieg("/api/v1/baixar-eventos", { corpo: { ChaveXml: chave, Take: 50, Skip: 0 } });
+    corpo = await chamarSieg("/api/v1/baixar-xml", {
+      corpo: { ChaveXml: chave, TipoXml: TIPOS_XML[tipo], XmlType: TIPOS_XML[tipo], BaixarEventos: true, Downloadevent: true },
+    });
   } catch (error) {
     if (error instanceof ErroSieg && error.status === 404) return [];
     throw error;
   }
-  if (Array.isArray(corpo?.Eventos) && corpo.Eventos.length) {
-    return corpo.Eventos.map((e) => ({
-      tipo: typeof e.TipoEvento === "number" ? e.TipoEvento : null,
-      descricao: e.Descricao ?? "Evento",
-      protocolo: e.Protocolo ?? null,
-      data: e.DataEvento ?? null,
-    }));
-  }
-  // Alguns retornos trazem só os XMLs dos eventos em base64.
-  return extrairArquivos(corpo)
-    .filter((a) => a.tipo === "xml")
-    .map((a) => {
-      const r = resumirXml(a.conteudo.toString("utf8"));
-      return { tipo: null, descricao: r?.naturezaOperacao ?? "Evento", protocolo: null, data: r?.emissao?.toISOString() ?? null };
+  const eventos: EventoNota[] = [];
+  for (const a of extrairArquivos(corpo)) {
+    if (a.tipo !== "xml") continue;
+    const xml = a.conteudo.toString("utf8");
+    const r = resumirXml(xml);
+    if (!r?.ehEvento) continue;
+    const codigo = r.tipoEvento ?? null;
+    eventos.push({
+      tipo: codigo ? Number(codigo) : null,
+      descricao: (codigo && NOME_EVENTO[codigo]) || r.naturezaOperacao || "Evento",
+      protocolo: /<(?:[\w-]+:)?nProt>(\d+)</.exec(xml)?.[1] ?? null,
+      data: r.emissao?.toISOString() ?? null,
     });
+  }
+  return eventos.sort((a, b) => (a.data ?? "").localeCompare(b.data ?? ""));
 }
 
 /**

@@ -465,3 +465,6 @@ export function inscricoesDoXml(xml: string, documento: string): { ie: string | 
   }
   return { ie, im };
 }
+
+/** Auxiliares de leitura de XML para outros módulos (ex.: danfe.ts). */
+export const xmlUtil = { tag, primeiraTag, texto, numero, digitos, data, docDe };

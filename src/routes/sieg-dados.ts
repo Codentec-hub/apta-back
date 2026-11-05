@@ -27,6 +27,7 @@ import {
   zipXmlsMes,
 } from "../sieg/notas.js";
 import { renovarTokenOAuth } from "../sieg/oauth.js";
+import { detalharNota } from "../sieg/danfe.js";
 import { estadoAgendamento, estadoCapturaNoturna, mesesAbertos, sincronizacaoCompleta } from "../sieg/agendamento.js";
 
 export const siegDadosRouter = Router();
@@ -38,10 +39,12 @@ const docSchema = z.string().transform((v) => v.replace(/\D/g, "")).refine((v) =
 const tipoSchema = z.enum(Object.keys(TIPOS_XML) as [TipoNota, ...TipoNota[]]);
 const papelSchema = z.enum(["emitente", "destinatario"]);
 
-/** Erro da SIEG vira 502 com a mensagem dela; o resto segue para o handler geral. */
+/** Erro da SIEG vira 424 com a mensagem dela; o resto segue para o handler geral. */
 function responderErroSieg(res: Response, error: unknown): boolean {
   if (error instanceof ErroSieg || (error instanceof Error && /SIEG|OAuth/i.test(error.message))) {
-    res.status(502).json({ erro: error.message });
+    // 424 e não 502: o proxy do servidor troca respostas 502 pela página dele
+    // (sem CORS), e o navegador só mostrava "Failed to fetch".
+    res.status(424).json({ erro: error.message });
     return true;
   }
   return false;
@@ -276,6 +279,21 @@ siegDadosRouter.get("/sieg/dados/notas/zip", asyncHandler(async (req, res) => {
     return;
   }
   enviarArquivo(res, zip.nome, zip.conteudo, "application/zip");
+}));
+
+// Dados da nota para o DANFE/visualização montados no sistema (a SIEG só gera
+// o DANFE com permissão de escrita).
+siegDadosRouter.get("/sieg/dados/notas/:chave/detalhe", asyncHandler(async (req, res) => {
+  const chave = String(req.params["chave"]);
+  try {
+    const [a, nota] = await Promise.all([
+      baixarXmlNota(chave),
+      prisma.siegNota.findUnique({ where: { chave }, select: { tipo: true, cancelada: true, documentoEmpresa: true, papel: true } }),
+    ]);
+    res.json({ ...detalharNota(a.conteudo.toString("utf8"), nota?.tipo ?? null), cancelada: nota?.cancelada ?? false });
+  } catch (error) {
+    if (!responderErroSieg(res, error)) throw error;
+  }
 }));
 
 siegDadosRouter.get("/sieg/dados/notas/:chave/xml", asyncHandler(async (req, res) => {
