@@ -285,7 +285,9 @@ async function capturarNotas(buscaId: string, documento: string, mes: string, ti
         situacao: "erro",
         paginas,
         notas: gravadas,
-        erro: error instanceof Error ? error.message.slice(0, 500) : String(error),
+        erro: (error instanceof Error ? error.message : String(error))
+          .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+          .slice(0, 500),
         concluidaEm: new Date(),
       },
     });

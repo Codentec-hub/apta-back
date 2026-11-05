@@ -42,6 +42,39 @@ export function lerZip(zip: Buffer): { nome: string; conteudo: Buffer }[] {
   return saida;
 }
 
+/**
+ * XML em UTF-16 (padrão do Windows/.NET: "<\0?\0x\0m\0l\0", com ou sem BOM)
+ * vira UTF-8; o BOM do UTF-8 sai. Visto em produção em 05/11/2026: a SIEG
+ * devolve alguns XMLs em UTF-16 e, lidos como UTF-8, nada era reconhecido.
+ */
+export function paraUtf8(b: Buffer): Buffer {
+  if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return Buffer.from(b.subarray(2).toString("utf16le"), "utf8");
+  if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) {
+    const le = Buffer.from(b.subarray(2));
+    le.swap16();
+    return Buffer.from(le.toString("utf16le"), "utf8");
+  }
+  // Sem BOM: texto ASCII em UTF-16LE tem zero em toda posição ímpar do início.
+  if (b.length >= 8 && b[1] === 0 && b[3] === 0 && b[5] === 0 && b[0] !== 0) {
+    return Buffer.from(b.toString("utf16le"), "utf8");
+  }
+  if (b.length >= 8 && b[0] === 0 && b[2] === 0 && b[4] === 0 && b[1] !== 0) {
+    const le = Buffer.from(b.subarray(0, b.length - (b.length % 2)));
+    le.swap16();
+    return Buffer.from(le.toString("utf16le"), "utf8");
+  }
+  if (b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return b.subarray(3);
+  return b;
+}
+
+/** Normaliza o arquivo: se for XML (inclusive UTF-16), devolve em UTF-8. */
+function normalizar(b: Buffer): { conteudo: Buffer; tipo: ArquivoSieg["tipo"] } {
+  if (b[0] === 0x50 && b[1] === 0x4b) return { conteudo: b, tipo: "zip" };
+  const utf8 = paraUtf8(b);
+  const tipo = classificar(utf8);
+  return { conteudo: tipo === "xml" ? utf8 : b, tipo };
+}
+
 function classificar(b: Buffer): ArquivoSieg["tipo"] {
   const inicio = b.subarray(0, 8).toString("latin1").replace(/^﻿|^\xEF\xBB\xBF/, "").trimStart();
   if (inicio.startsWith("<")) return "xml";
@@ -68,7 +101,7 @@ export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
         return;
       }
       if (!pareceBase64(texto)) return;
-      let bin = Buffer.from(texto, "base64");
+      let bin: Buffer = Buffer.from(texto, "base64");
       // Conteúdo compactado em gzip (1f 8b): abre antes de classificar.
       if (bin[0] === 0x1f && bin[1] === 0x8b) {
         try {
@@ -77,7 +110,9 @@ export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
           return;
         }
       }
-      const tipo = classificar(bin);
+      const normal = normalizar(bin);
+      const tipo = normal.tipo;
+      if (tipo === "xml") bin = normal.conteudo;
       if (tipo === "zip") {
         let entradas: { nome: string; conteudo: Buffer }[] = [];
         try {
@@ -92,7 +127,7 @@ export function extrairArquivos(corpo: unknown): ArquivoSieg[] {
           arquivos.push({ nome: `${nome}.xlsx`, conteudo: bin, tipo: "planilha" });
           return;
         }
-        for (const e of entradas) arquivos.push({ nome: e.nome, conteudo: e.conteudo, tipo: classificar(e.conteudo) });
+        for (const e of entradas) arquivos.push({ nome: e.nome, ...normalizar(e.conteudo) });
         return;
       }
       if (tipo !== "outro") arquivos.push({ nome: `${nome}.${tipo}`, conteudo: bin, tipo });
@@ -379,5 +414,9 @@ export function descreverResposta(corpo: unknown): string {
   partes.push(`arquivos achados: ${arquivos.length ? JSON.stringify(porTipo) : "nenhum"}`);
   const xml = arquivos.find((a) => a.tipo === "xml");
   if (xml) partes.push(`1º XML começa com "${xml.conteudo.subarray(0, 80).toString("utf8").replace(/\s+/g, " ")}"`);
-  return partes.join(" · ").slice(0, 900);
+  // Sem bytes nulos/de controle: o Postgres recusa \0 em texto.
+  return partes
+    .join(" · ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .slice(0, 900);
 }
