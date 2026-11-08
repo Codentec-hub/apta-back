@@ -4,7 +4,7 @@
 //  - Uma vez por noite (a partir das 2h, horário de Brasília):
 //      1. atualiza a lista de empresas e o status dos certificados;
 //      2. conta as notas do mês atual e, até o dia de corte, do anterior;
-//      3. captura os XMLs que ainda faltam (contadas na SIEG > guardadas
+//      3. ao mesmo tempo (filas de limite separadas), captura os XMLs que ainda faltam (contadas na SIEG > guardadas
 //         aqui), empresa por empresa. "Baixar XMLs" aceita 2 lotes de 50 por
 //         minuto, então a primeira carga leva várias noites: a captura para às
 //         8h (para não disputar a fila com quem usa o sistema de dia) e
@@ -129,9 +129,20 @@ export async function capturasPendentes(meses: string[]): Promise<Pendente[]> {
   return saida.sort((a, b) => b.mes.localeCompare(a.mes) || a.faltam - b.faltam);
 }
 
-/** Captura noturna dos XMLs que faltam. Para no horário-limite e retoma na noite seguinte. */
-export async function capturaNoturna(meses: string[], respeitarHorario = true): Promise<void> {
-  const pendentes = await capturasPendentes(meses);
+const chavePendente = (p: Pendente) => `${p.documento}|${p.mes}|${p.tipo}|${p.papel}`;
+
+/**
+ * Captura noturna dos XMLs que faltam. Para no horário-limite e retoma na noite
+ * seguinte. Roda junto com a contagem (cada rota da SIEG tem sua própria fila
+ * de limite): começa pelo que já se sabia que faltava e, quando a contagem da
+ * noite termina (`contagem`), faz mais uma passada com o que ela achou de novo.
+ */
+export async function capturaNoturna(
+  meses: string[],
+  respeitarHorario = true,
+  contagem?: Promise<unknown>,
+): Promise<void> {
+  let pendentes = await capturasPendentes(meses);
   estadoCaptura = {
     situacao: "andamento",
     pendentes: pendentes.length,
@@ -141,29 +152,46 @@ export async function capturaNoturna(meses: string[], respeitarHorario = true): 
     iniciadaEm: new Date().toISOString(),
     concluidaEm: null,
   };
+  const tentadas = new Set<string>();
   let pausou = false;
-  for (const p of pendentes) {
-    if (respeitarHorario && horaBrasilia() >= HORA_FIM_CAPTURA) {
-      pausou = true;
-      break;
+  let semAutorizacao = false;
+  let aguardar = contagem;
+  for (;;) {
+    for (const p of pendentes) {
+      if (respeitarHorario && horaBrasilia() >= HORA_FIM_CAPTURA) {
+        pausou = true;
+        break;
+      }
+      tentadas.add(chavePendente(p));
+      try {
+        const busca = await capturarNotasAgora(p.documento, p.mes, p.tipo, p.papel);
+        if (busca?.situacao === "erro") estadoCaptura.erros.push(`${p.nome} ${p.mes} ${p.tipo}: ${busca.erro}`);
+        estadoCaptura.notas += busca?.notas ?? 0;
+        if (busca?.erro && /401|403|autoriza/i.test(busca.erro)) {
+          semAutorizacao = true;
+          break;
+        }
+      } catch (error) {
+        estadoCaptura.erros.push(`${p.nome}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      estadoCaptura.feitas++;
     }
-    try {
-      const busca = await capturarNotasAgora(p.documento, p.mes, p.tipo, p.papel);
-      if (busca?.situacao === "erro") estadoCaptura.erros.push(`${p.nome} ${p.mes} ${p.tipo}: ${busca.erro}`);
-      estadoCaptura.notas += busca?.notas ?? 0;
-      if (busca?.erro && /401|403|autoriza/i.test(busca.erro)) break;
-    } catch (error) {
-      estadoCaptura.erros.push(`${p.nome}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    estadoCaptura.feitas++;
+    if (pausou || semAutorizacao || !aguardar) break;
+    // Espera a contagem da noite e pega o que ela achou (sem repetir o já tentado).
+    await aguardar.catch(() => {});
+    aguardar = undefined;
+    pendentes = (await capturasPendentes(meses)).filter((p) => !tentadas.has(chavePendente(p)));
+    if (!pendentes.length) break;
+    estadoCaptura.pendentes += pendentes.length;
   }
+  const total = estadoCaptura.pendentes;
   estadoCaptura = {
     ...estadoCaptura,
     erros: estadoCaptura.erros.slice(-30),
     situacao: pausou ? "pausada" : estadoCaptura.erros.length && !estadoCaptura.notas ? "erro" : "concluida",
     concluidaEm: new Date().toISOString(),
   };
-  const resumo = `${estadoCaptura.notas} nota(s) guardada(s) em ${estadoCaptura.feitas} de ${pendentes.length} lote(s)${
+  const resumo = `${estadoCaptura.notas} nota(s) guardada(s) em ${estadoCaptura.feitas} de ${total} lote(s)${
     pausou ? "; parou às 8h e continua na próxima noite" : ""
   }${estadoCaptura.erros.length ? `; ${estadoCaptura.erros.length} erro(s)` : ""}`;
   await prisma.configuracaoSieg.update({
@@ -194,20 +222,25 @@ export async function sincronizacaoCompleta(respeitarHorario = true): Promise<vo
       }
     }
     const { meses } = await mesesAbertos();
-    for (const mes of meses) {
-      etapa = `contagem ${mes}`;
-      try {
-        await contarNotasTodas(mes);
-      } catch (error) {
-        erros.push(`contagem ${mes}: ${error instanceof Error ? error.message : String(error)}`);
+    // Contagem e captura em paralelo: a contagem de ~190 empresas (5 por
+    // minuto na SIEG) toma a madrugada inteira, e em série a captura começava
+    // às 8h e parava sem baixar nada.
+    etapa = "contagem e captura de XMLs";
+    const contagem = (async () => {
+      for (const mes of meses) {
+        try {
+          await contarNotasTodas(mes);
+        } catch (error) {
+          erros.push(`contagem ${mes}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
-    }
-    etapa = "captura de XMLs";
+    })();
     try {
-      await capturaNoturna(meses, respeitarHorario);
+      await capturaNoturna(meses, respeitarHorario, contagem);
     } catch (error) {
       erros.push(`captura: ${error instanceof Error ? error.message : String(error)}`);
     }
+    await contagem;
     await limparRegistroChamadas();
   } finally {
     rodando = false;
