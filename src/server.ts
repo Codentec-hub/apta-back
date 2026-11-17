@@ -22,6 +22,9 @@ import { configuracoesIntegracaoRouter } from "./routes/configuracoes-integracao
 import { configuracoesSiegRouter } from "./routes/configuracoes-sieg.js";
 import { siegOauthRouter } from "./routes/sieg-oauth.js";
 import { siegDadosRouter } from "./routes/sieg-dados.js";
+import { auditoriaRouter } from "./routes/auditoria.js";
+import { agendarLimpezaAuditoria } from "./auditoria/registrar.js";
+import { prismaBase } from "./prisma.js";
 import { agendarSieg } from "./sieg/agendamento.js";
 import { agendarSaudeFiscal } from "./saude-fiscal/agendamento.js";
 import { agendarPreenchimentoClientes } from "./clientes/completar.js";
@@ -62,6 +65,7 @@ app.use(siegOauthRouter);
 // Tempo real (SSE): autentica pelo token na URL.
 app.use(eventosRouter);
 app.use(authRouter);
+app.use(auditoriaRouter);
 app.use(usuariosRouter);
 app.use(setoresRouter);
 app.use(clientesRouter);
@@ -98,6 +102,7 @@ app.listen(port, () => {
   agendarGeracaoAutomatica();
   agendarAlertasNaoLida();
   agendarSieg();
+  agendarLimpezaAuditoria(prismaBase);
   agendarSaudeFiscal();
   agendarPreenchimentoClientes();
 });

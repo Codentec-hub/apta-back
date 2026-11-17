@@ -4,7 +4,8 @@ import { z } from "zod";
 import { assinarToken } from "../auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
-import { prisma } from "../prisma.js";
+import { registrarAuditoria } from "../auditoria/registrar.js";
+import { prisma, prismaBase } from "../prisma.js";
 
 export const authRouter = Router();
 
@@ -44,6 +45,14 @@ authRouter.post("/auth/login", asyncHandler(async (req, res) => {
   const senhaConfere = usuario ? await bcrypt.compare(senha, usuario.senhaHash) : false;
   if (!usuario || !senhaConfere) {
     registrarFalha(email, ip);
+    void registrarAuditoria(prismaBase, {
+      acao: "login_falhou",
+      modulo: "acesso",
+      descricao: `Tentativa de login com senha errada (${email})`,
+      usuarioId: usuario?.id ?? null,
+      usuarioNome: usuario?.nome ?? null,
+      ip,
+    });
     res.status(401).json({ erro: "E-mail ou senha incorretos" });
     return;
   }
@@ -52,6 +61,14 @@ authRouter.post("/auth/login", asyncHandler(async (req, res) => {
     return;
   }
   falhas.delete(`e:${email}`);
+  void registrarAuditoria(prismaBase, {
+    acao: "login",
+    modulo: "acesso",
+    descricao: `${usuario.nome} entrou no sistema`,
+    usuarioId: usuario.id,
+    usuarioNome: usuario.nome,
+    ip,
+  });
 
   const token = assinarToken({ usuarioId: usuario.id, perfil: usuario.perfil });
 

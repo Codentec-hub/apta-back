@@ -956,3 +956,28 @@ model PendenciaCliente {
   @@index([clienteId])
   @@map("pendencias_cliente")
 }
+
+// Trilha de auditoria: quem fez o quê, quando e de onde. Gravada sozinha pela
+// extensão do Prisma (src/auditoria/registrar.ts) para criar/alterar/excluir
+// nos cadastros, e explicitamente para login/saída.
+model Auditoria {
+  id          String   @id @default(uuid())
+  criadoEm    DateTime @default(now()) @map("criado_em")
+  usuarioId   String?  @map("usuario_id")
+  usuarioNome String?  @map("usuario_nome")
+  ip          String?
+  acao        String // criar | alterar | excluir | login | login_falhou
+  modulo      String // clientes, usuarios, obrigacoes, ...
+  entidade    String? // nome do modelo (Cliente, Usuario...)
+  entidadeId  String?  @map("entidade_id")
+  descricao   String
+  clienteId   String?  @map("cliente_id")
+  antes       Json?
+  depois      Json?
+
+  @@index([criadoEm])
+  @@index([usuarioId, criadoEm])
+  @@index([clienteId, criadoEm])
+  @@index([modulo, criadoEm])
+  @@map("auditoria")
+}
