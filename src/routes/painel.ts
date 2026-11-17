@@ -191,6 +191,16 @@ painelRouter.get("/painel", asyncHandler(async (req, res) => {
       prisma.siegNota.count({ where: { mes: mesSieg } }),
       prisma.siegEmpresa.count({ where: { ativo: true, deletado: false } }),
     ]);
+    const semEmail = await prisma.cliente.count({
+      where: { ativo: true, contatos: { none: { AND: [{ email: { not: null } }, { NOT: { email: "" } }] } } },
+    });
+    if (semEmail)
+      alertas.push({
+        severidade: "info",
+        titulo: `${semEmail} cliente(s) sem e-mail de contato`,
+        detalhe: "Sem um contato com e-mail, o protocolo das obrigações não tem para quem ir. Cadastre na ficha de cada cliente.",
+        href: "/dashboard/clientes",
+      });
     const vencidos = certificados.filter((c) => c.certificadoExpiraEm! < agora);
     if (vencidos.length)
       alertas.push({

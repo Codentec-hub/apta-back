@@ -68,6 +68,8 @@ model Usuario {
   demandas           Demanda[]
   atendimentos       Atendimento[]
   mensagens          Mensagem[]
+  notificacoes       Notificacao[]
+  preferenciasNotificacao PreferenciaNotificacao[]
 
   @@map("usuarios")
 }
@@ -1003,4 +1005,42 @@ model ConfiguracaoEscritorio {
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   @@map("configuracao_escritorio")
+}
+
+// Central de notificações: avisos para cada usuário (sino no topo e página
+// /dashboard/notificacoes). `chave` evita repetir o mesmo aviso (a rotina de
+// hora em hora pode rodar várias vezes): único por usuário.
+model Notificacao {
+  id             String    @id @default(uuid())
+  usuarioId      String    @map("usuario_id")
+  usuario        Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  tipo           String
+  categoria      String
+  severidade     String    @default("info") // info | sucesso | aviso | erro
+  titulo         String
+  mensagem       String
+  href           String?
+  chave          String?
+  dados          Json?
+  lidaEm         DateTime? @map("lida_em")
+  arquivadaEm    DateTime? @map("arquivada_em")
+  emailEnviadoEm DateTime? @map("email_enviado_em")
+  criadoEm       DateTime  @default(now()) @map("criado_em")
+
+  @@unique([usuarioId, chave])
+  @@index([usuarioId, arquivadaEm, criadoEm])
+  @@index([usuarioId, lidaEm])
+  @@map("notificacoes")
+}
+
+// O que cada usuário quer receber, por tipo (sem linha = padrão do tipo).
+model PreferenciaNotificacao {
+  usuarioId String  @map("usuario_id")
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  tipo      String
+  app       Boolean @default(true)
+  email     Boolean @default(false)
+
+  @@id([usuarioId, tipo])
+  @@map("preferencias_notificacao")
 }

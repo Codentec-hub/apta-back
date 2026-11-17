@@ -6,7 +6,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { verificarToken } from "./auth.js";
 
-export type Evento = { tipo: "conversa"; conversaId: string };
+export type Evento = { tipo: "conversa"; conversaId: string } | { tipo: "notificacao"; usuarioId: string };
 
 const barramento = new EventEmitter();
 barramento.setMaxListeners(0);
@@ -20,8 +20,9 @@ export const eventosRouter = Router();
 // EventSource não manda cabeçalho Authorization, então o token vem na URL.
 eventosRouter.get("/eventos", (req: Request, res: Response) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
+  let usuarioId: string;
   try {
-    verificarToken(token);
+    usuarioId = verificarToken(token).usuarioId;
   } catch {
     res.status(401).json({ erro: "Token inválido ou expirado" });
     return;
@@ -35,7 +36,11 @@ eventosRouter.get("/eventos", (req: Request, res: Response) => {
   });
   res.write("retry: 3000\n\n");
 
-  const enviar = (evento: Evento) => res.write(`data: ${JSON.stringify(evento)}\n\n`);
+  // Notificação vai só para a tela do próprio usuário.
+  const enviar = (evento: Evento) => {
+    if (evento.tipo === "notificacao" && evento.usuarioId !== usuarioId) return;
+    res.write(`data: ${JSON.stringify(evento)}\n\n`);
+  };
   // Comentário periódico para proxies não derrubarem a conexão ociosa.
   const pulso = setInterval(() => res.write(": ping\n\n"), 25_000);
   barramento.on("evento", enviar);
