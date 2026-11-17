@@ -14,6 +14,7 @@ import {
 } from "../obrigacoes/gerar-entregas.js";
 import { garantirFeriados } from "../obrigacoes/feriados.js";
 import { calcularEntrega, competenciaParaDate, mesAtual, somarMeses } from "../obrigacoes/prazos.js";
+import { escritorio } from "../escritorio.js";
 import { prisma } from "../prisma.js";
 
 export const tiposObrigacaoRouter = Router();
@@ -130,7 +131,7 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/simular-prazos", asyncHandler(async 
   }
   await garantirFeriados();
   // Sem empresa específica: simula com a localidade do escritório.
-  const local = { uf: process.env.ESCRITORIO_UF ?? "CE", cidade: process.env.ESCRITORIO_CIDADE ?? "Fortaleza" };
+  const local = { uf: escritorio().uf, cidade: escritorio().cidade };
   const { ano, mes } = mesAtual();
   const resultado = [];
   for (let i = 0; i < 12; i++) {

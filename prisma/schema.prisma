@@ -981,3 +981,26 @@ model Auditoria {
   @@index([modulo, criadoEm])
   @@map("auditoria")
 }
+
+// Dados do escritório (Configurações → Escritório): nome e contatos que vão
+// nos e-mails, no protocolo de entrega e na saúde fiscal; cidade/UF definem os
+// feriados usados quando a simulação de prazo não tem empresa.
+model ConfiguracaoEscritorio {
+  id                  Int      @id @default(1)
+  nome                String   @default("Apta Contabilidade")
+  razaoSocial         String?  @map("razao_social")
+  cnpj                String?
+  crc                 String? // registro do escritório no CRC
+  responsavelTecnico  String?  @map("responsavel_tecnico")
+  email               String?
+  telefone            String?
+  whatsapp            String?
+  site                String?
+  endereco            String?
+  cidade              String   @default("Fortaleza")
+  uf                  String   @default("CE")
+  assinaturaMensagens String?  @map("assinatura_mensagens")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("configuracao_escritorio")
+}

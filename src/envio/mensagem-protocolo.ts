@@ -1,6 +1,7 @@
 // Texto do e-mail que leva o protocolo de entrega ao cliente. O e-mail traz
 // o link do protocolo, e não o anexo: é a abertura pelo link que marca o
 // documento como lido ("Docs lidos / não lidos").
+import { escritorio } from "../escritorio.js";
 import type { Email } from "./email.js";
 
 export interface DadosMensagemProtocolo {
@@ -77,7 +78,7 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
   const assunto = lembrete ? `${lembrete.prefixo.trim()} ${assuntoBase}`.trim() : assuntoBase;
   const abertura = lembrete
     ? `Ainda não identificamos a abertura de ${d.obrigacao.nome} da empresa ${d.empresa.razaoSocial}, que ${quandoVence(lembrete.diasRestantes)}.`
-    : `A Apta Contabilidade disponibilizou ${d.obrigacao.nome} da empresa ${d.empresa.razaoSocial}.`;
+    : `${escritorio().nome} disponibilizou ${d.obrigacao.nome} da empresa ${d.empresa.razaoSocial}.`;
   const aviso = lembrete?.aviso?.trim() || null;
 
   const texto = [
@@ -92,7 +93,7 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
     "",
     `Acesse pelo link: ${link}`,
     "",
-    d.analista ? `Dúvidas? Responda este e-mail para falar com ${d.analista.nome}.` : "Dúvidas? Fale com a Apta Contabilidade.",
+    d.analista ? `Dúvidas? Responda este e-mail para falar com ${d.analista.nome}.` : `Dúvidas? Fale com a ${escritorio().nome}.`,
   ].join("\n");
 
   const html = `<!doctype html>
@@ -100,7 +101,7 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
 <body style="margin:0;padding:24px;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1f2937">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px">
     <tr><td style="padding:24px 28px;border-bottom:1px solid #e5e7eb">
-      <strong style="font-size:18px;color:#1e3a5f">Apta Contabilidade</strong>
+      <strong style="font-size:18px;color:#1e3a5f">${escapar(escritorio().nome)}</strong>
     </td></tr>
     <tr><td style="padding:28px">${
       aviso
@@ -112,7 +113,7 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
       <p style="margin:0 0 16px">${
         lembrete
           ? `Ainda não identificamos a abertura de <strong>${escapar(d.obrigacao.nome)}</strong> da empresa <strong>${escapar(d.empresa.razaoSocial)}</strong>, que <strong>${quandoVence(lembrete.diasRestantes)}</strong>.`
-          : `A Apta Contabilidade disponibilizou <strong>${escapar(d.obrigacao.nome)}</strong> da empresa <strong>${escapar(d.empresa.razaoSocial)}</strong>.`
+          : `${escritorio().nome} disponibilizou <strong>${escapar(d.obrigacao.nome)}</strong> da empresa <strong>${escapar(d.empresa.razaoSocial)}</strong>.`
       }</p>
       <p style="margin:0 0 16px;color:#4b5563;font-size:14px;line-height:1.6">${detalhes.map(escapar).join("<br>")}</p>
       <p style="margin:0 0 8px;font-size:14px">Documentos:</p>
@@ -123,7 +124,7 @@ export function mensagemProtocolo(d: DadosMensagemProtocolo, lembrete?: Lembrete
       <p style="margin:0;font-size:12px;color:#6b7280">Se o botão não funcionar, copie este endereço no navegador:<br><a href="${escapar(link)}" style="color:#1e3a5f;word-break:break-all">${escapar(link)}</a></p>
     </td></tr>
     <tr><td style="padding:16px 28px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">
-      ${d.analista ? `Dúvidas? Responda este e-mail para falar com ${escapar(d.analista.nome)}.` : "Dúvidas? Fale com a Apta Contabilidade."}
+      ${d.analista ? `Dúvidas? Responda este e-mail para falar com ${escapar(d.analista.nome)}.` : `Dúvidas? Fale com a ${escritorio().nome}.`}
     </td></tr>
   </table>
 </body>

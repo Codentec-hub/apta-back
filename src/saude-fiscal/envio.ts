@@ -4,6 +4,7 @@
 import { randomBytes } from "node:crypto";
 
 import { emailConfigurado, enviarEmail } from "../envio/email.js";
+import { assinatura, escritorio } from "../escritorio.js";
 import { prisma } from "../prisma.js";
 import { provedorWhatsApp } from "../whatsapp/provedor.js";
 import { normalizarTelefone, telefoneValido } from "../whatsapp/telefone.js";
@@ -87,7 +88,7 @@ async function disparar(clienteId: string, canais: Canal[], mensagem: Mensagem, 
 }
 
 function moldura(conteudo: string): string {
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.5">${conteudo}<p style="color:#6b7280;font-size:12px;margin-top:24px">Apta Contabilidade</p></div>`;
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.5">${conteudo}<p style="color:#6b7280;font-size:12px;margin-top:24px">${escapar(assinatura())}</p></div>`;
 }
 
 /** Gera o relatório do mês (números congelados) e, se pedido, envia aos contatos. */
@@ -120,7 +121,7 @@ export async function gerarRelatorio(opcoes: {
     {
       assunto: `Relatório de saúde fiscal · ${empresa} · ${periodo}`,
       texto: (nome) =>
-        `Olá, ${primeiroNome(nome)}! Aqui está o seu relatório de saúde fiscal de ${periodo} da ${empresa}: compras, vendas, serviços, guias e pendências do mês.\n\n${link}\n\nQualquer dúvida, é só responder esta mensagem.\nApta Contabilidade`,
+        `Olá, ${primeiroNome(nome)}! Aqui está o seu relatório de saúde fiscal de ${periodo} da ${empresa}: compras, vendas, serviços, guias e pendências do mês.\n\n${link}\n\nQualquer dúvida, é só responder esta mensagem.\n${assinatura()}`,
       html: (nome) =>
         moldura(
           `<p>Olá, ${escapar(primeiroNome(nome))}!</p><p>Aqui está o seu <strong>relatório de saúde fiscal de ${escapar(periodo)}</strong> da ${escapar(empresa)}: compras, vendas, serviços, guias e pendências do mês.</p><p><a href="${link}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Ver meu relatório</a></p><p style="font-size:13px;color:#6b7280">Se o botão não abrir, copie o endereço: ${link}</p>`,
@@ -149,14 +150,14 @@ export async function enviarPendencias(clienteId: string, canais: Canal[], conta
     clienteId,
     canais,
     {
-      assunto: `Pendências com a Apta Contabilidade · ${empresa}`,
+      assunto: `Pendências com a ${escritorio().nome} · ${empresa}`,
       texto: (nome) =>
-        `Olá, ${primeiroNome(nome)}! Estas são as pendências da ${empresa} com a Apta Contabilidade hoje:\n\n${pendencias
+        `Olá, ${primeiroNome(nome)}! Estas são as pendências da ${empresa} com a ${escritorio().nome} hoje:\n\n${pendencias
           .map(linha)
-          .join("\n")}\n\nQualquer dúvida, é só responder esta mensagem.\nApta Contabilidade`,
+          .join("\n")}\n\nQualquer dúvida, é só responder esta mensagem.\n${assinatura()}`,
       html: (nome) =>
         moldura(
-          `<p>Olá, ${escapar(primeiroNome(nome))}!</p><p>Estas são as pendências da ${escapar(empresa)} com a Apta Contabilidade hoje:</p><ol>${pendencias
+          `<p>Olá, ${escapar(primeiroNome(nome))}!</p><p>Estas são as pendências da ${escapar(empresa)} com a ${escapar(escritorio().nome)} hoje:</p><ol>${pendencias
             .map((p) => `<li><strong>${escapar(p.titulo)}</strong>${p.detalhe ? `<br><span style="color:#6b7280">${escapar(p.detalhe)}</span>` : ""}</li>`)
             .join("")}</ol><p>Qualquer dúvida, é só responder este e-mail.</p>`,
         ),
