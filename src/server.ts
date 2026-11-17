@@ -34,6 +34,8 @@ import { consultaCnpjRouter } from "./routes/consulta-cnpj.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 
 const app = express();
+// Atrás do proxy do EasyPanel: req.ip passa a ser o IP real do usuário.
+app.set("trust proxy", 1);
 
 // Expõe o nome do arquivo nos downloads (XML/DANFE/relatórios da SIEG).
 app.use(cors({ exposedHeaders: ["Content-Disposition"] }));

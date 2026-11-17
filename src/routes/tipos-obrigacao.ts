@@ -5,6 +5,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import {
   gerarJanela,
   gerarRetroativas,
@@ -68,7 +69,7 @@ tiposObrigacaoRouter.get("/tipos-obrigacao", asyncHandler(async (_req, res) => {
   res.json(tipos);
 }));
 
-tiposObrigacaoRouter.post("/tipos-obrigacao", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.post("/tipos-obrigacao", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = tipoObrigacaoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -87,7 +88,7 @@ tiposObrigacaoRouter.post("/tipos-obrigacao", asyncHandler(async (req, res) => {
   res.status(201).json(tipo);
 }));
 
-tiposObrigacaoRouter.put("/tipos-obrigacao/:id", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.put("/tipos-obrigacao/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = tipoObrigacaoSchema.partial().safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -141,7 +142,7 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/simular-prazos", asyncHandler(async 
 }));
 
 // "Replicar obrigação": cria uma cópia do cadastro com outro nome.
-tiposObrigacaoRouter.post("/tipos-obrigacao/:id/replicar", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.post("/tipos-obrigacao/:id/replicar", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ nome: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: "Informe o nome da nova obrigação" });
@@ -162,7 +163,7 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/:id/replicar", asyncHandler(async (r
 }));
 
 // "Retro": gera as pendências retroativas desta obrigação desde um mês.
-tiposObrigacaoRouter.post("/tipos-obrigacao/:id/retro", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.post("/tipos-obrigacao/:id/retro", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ desde: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: "Informe o mês inicial (AAAA-MM)" });
@@ -175,7 +176,7 @@ tiposObrigacaoRouter.post("/tipos-obrigacao/:id/retro", asyncHandler(async (req,
 
 // "Avulsa": lança uma entrega desta obrigação fora da regra, para as
 // empresas escolhidas (ex.: uma declaração extra num mês específico).
-tiposObrigacaoRouter.post("/tipos-obrigacao/:id/avulsa", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.post("/tipos-obrigacao/:id/avulsa", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z
     .object({
       clienteIds: z.array(z.string().uuid()).min(1),
@@ -244,7 +245,7 @@ tiposObrigacaoRouter.get("/tipos-obrigacao/:id/empresas", asyncHandler(async (re
 }));
 
 // "Adicionar empresa a essa obrigação".
-tiposObrigacaoRouter.post("/tipos-obrigacao/:id/empresas", asyncHandler(async (req, res) => {
+tiposObrigacaoRouter.post("/tipos-obrigacao/:id/empresas", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ clienteIds: z.array(z.string().uuid()).min(1) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });

@@ -5,6 +5,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { gerarJanela, removerFuturasIntocadas } from "../obrigacoes/gerar-entregas.js";
 import { alocar, aplicarRegime } from "../obrigacoes/alocacao.js";
 import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
@@ -28,7 +29,7 @@ cadastroObrigacoesRouter.get("/regimes", asyncHandler(async (_req, res) => {
   res.json(regimes.map(({ obrigacoes, ...r }) => ({ ...r, tipoIds: obrigacoes.map((o) => o.tipoId) })));
 }));
 
-cadastroObrigacoesRouter.post("/regimes", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.post("/regimes", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = conjuntoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -44,7 +45,7 @@ cadastroObrigacoesRouter.post("/regimes", asyncHandler(async (req, res) => {
   res.status(201).json({ ...regime, tipoIds: parsed.data.tipoIds });
 }));
 
-cadastroObrigacoesRouter.put("/regimes/:id", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.put("/regimes/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = conjuntoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -74,7 +75,7 @@ cadastroObrigacoesRouter.put("/regimes/:id", asyncHandler(async (req, res) => {
   res.json({ ...regime, tipoIds: parsed.data.tipoIds });
 }));
 
-cadastroObrigacoesRouter.delete("/regimes/:id", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.delete("/regimes/:id", somenteGestao, asyncHandler(async (req, res) => {
   const existente = await prisma.regimeTributario.findUnique({ where: { id: req.params.id } });
   if (!existente) {
     res.status(404).json({ erro: "Regime não encontrado" });
@@ -94,7 +95,7 @@ cadastroObrigacoesRouter.get("/grupos-obrigacao", asyncHandler(async (_req, res)
   res.json(grupos.map(({ obrigacoes, ...g }) => ({ ...g, tipoIds: obrigacoes.map((o) => o.tipoId) })));
 }));
 
-cadastroObrigacoesRouter.post("/grupos-obrigacao", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.post("/grupos-obrigacao", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = conjuntoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -110,7 +111,7 @@ cadastroObrigacoesRouter.post("/grupos-obrigacao", asyncHandler(async (req, res)
   res.status(201).json({ ...grupo, tipoIds: parsed.data.tipoIds });
 }));
 
-cadastroObrigacoesRouter.put("/grupos-obrigacao/:id", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.put("/grupos-obrigacao/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = conjuntoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -136,7 +137,7 @@ cadastroObrigacoesRouter.put("/grupos-obrigacao/:id", asyncHandler(async (req, r
   res.json({ ...grupo, tipoIds: parsed.data.tipoIds });
 }));
 
-cadastroObrigacoesRouter.delete("/grupos-obrigacao/:id", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.delete("/grupos-obrigacao/:id", somenteGestao, asyncHandler(async (req, res) => {
   const existente = await prisma.grupoObrigacao.findUnique({ where: { id: req.params.id } });
   if (!existente) {
     res.status(404).json({ erro: "Grupo não encontrado" });
@@ -197,7 +198,7 @@ cadastroObrigacoesRouter.get("/clientes/:id/obrigacoes", asyncHandler(async (req
 }));
 
 // Aloca obrigações avulsas na empresa (reativa se já existiam inativas).
-cadastroObrigacoesRouter.post("/clientes/:id/obrigacoes", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.post("/clientes/:id/obrigacoes", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ tipoIds: z.array(z.string().uuid()).min(1) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -214,7 +215,7 @@ cadastroObrigacoesRouter.post("/clientes/:id/obrigacoes", asyncHandler(async (re
 
 // Aplicar regime: SUBSTITUI as obrigações da empresa pelas do regime — as
 // que não estão no regime ficam inativas (o histórico de entregas fica).
-cadastroObrigacoesRouter.post("/clientes/:id/aplicar-regime", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.post("/clientes/:id/aplicar-regime", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ regimeId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -234,7 +235,7 @@ cadastroObrigacoesRouter.post("/clientes/:id/aplicar-regime", asyncHandler(async
 }));
 
 // Grupo: ADICIONA sem mexer no que já existe.
-cadastroObrigacoesRouter.post("/clientes/:id/aplicar-grupo", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.post("/clientes/:id/aplicar-grupo", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z.object({ grupoId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -254,7 +255,7 @@ cadastroObrigacoesRouter.post("/clientes/:id/aplicar-grupo", asyncHandler(async 
   res.json(await listarDaEmpresa(cliente.id));
 }));
 
-cadastroObrigacoesRouter.put("/cliente-obrigacoes/:id", asyncHandler(async (req, res) => {
+cadastroObrigacoesRouter.put("/cliente-obrigacoes/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = z
     .object({
       ativa: z.boolean().optional(),

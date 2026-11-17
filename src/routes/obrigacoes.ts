@@ -6,6 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { calcularEntrega, competenciaParaDate, somarMeses } from "../obrigacoes/prazos.js";
 import { garantirFeriados } from "../obrigacoes/feriados.js";
 import { gerarJanela } from "../obrigacoes/gerar-entregas.js";
@@ -443,7 +444,7 @@ obrigacoesRouter.post("/obrigacoes/:id/reabrir", asyncHandler(async (req, res) =
   res.json(obrigacao);
 }));
 
-obrigacoesRouter.delete("/obrigacoes/:id", asyncHandler(async (req, res) => {
+obrigacoesRouter.delete("/obrigacoes/:id", somenteGestao, asyncHandler(async (req, res) => {
   const existente = await prisma.obrigacao.findUnique({ where: { id: req.params.id } });
   if (!existente) {
     res.status(404).json({ erro: "Obrigação não encontrada" });

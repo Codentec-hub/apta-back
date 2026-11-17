@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { prisma } from "../prisma.js";
 
 export const demandasRouter = Router();
@@ -83,7 +84,7 @@ demandasRouter.put("/demandas/:id", asyncHandler(async (req, res) => {
   res.json(demanda);
 }));
 
-demandasRouter.delete("/demandas/:id", asyncHandler(async (req, res) => {
+demandasRouter.delete("/demandas/:id", somenteGestao, asyncHandler(async (req, res) => {
   const existente = await prisma.demanda.findUnique({ where: { id: req.params.id } });
   if (!existente) {
     res.status(404).json({ erro: "Demanda não encontrada" });

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { prisma } from "../prisma.js";
 import { redistribuirPendentes } from "../obrigacoes/responsaveis.js";
 
@@ -24,7 +25,7 @@ const setorSchema = z.object({
   responsavelId: z.string().uuid().nullable().optional(),
 });
 
-setoresRouter.post("/setores", asyncHandler(async (req, res) => {
+setoresRouter.post("/setores", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = setorSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: "nome é obrigatório" });
@@ -44,7 +45,7 @@ setoresRouter.post("/setores", asyncHandler(async (req, res) => {
   res.status(201).json(setor);
 }));
 
-setoresRouter.put("/setores/:id", asyncHandler(async (req, res) => {
+setoresRouter.put("/setores/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = setorSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: "nome é obrigatório" });

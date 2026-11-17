@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { prisma } from "../prisma.js";
 
 export const financeiroRouter = Router();
@@ -14,7 +15,7 @@ const lancamentoInclude = {
 
 const tipoEnum = z.enum(["PAGAR", "RECEBER"]);
 
-financeiroRouter.get("/financeiro/lancamentos", asyncHandler(async (req, res) => {
+financeiroRouter.get("/financeiro/lancamentos", somenteGestao, asyncHandler(async (req, res) => {
   const { clienteId, tipo } = req.query;
   const tipoParsed = tipoEnum.safeParse(tipo);
 
@@ -38,7 +39,7 @@ const criarLancamentoSchema = z.object({
   clienteId: z.string().uuid().optional().nullable(),
 });
 
-financeiroRouter.post("/financeiro/lancamentos", asyncHandler(async (req, res) => {
+financeiroRouter.post("/financeiro/lancamentos", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = criarLancamentoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -64,7 +65,7 @@ async function buscarLancamentoOu404(id: string) {
   return prisma.lancamentoFinanceiro.findUnique({ where: { id } });
 }
 
-financeiroRouter.put("/financeiro/lancamentos/:id", asyncHandler(async (req, res) => {
+financeiroRouter.put("/financeiro/lancamentos/:id", somenteGestao, asyncHandler(async (req, res) => {
   const parsed = atualizarLancamentoSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ erro: parsed.error.flatten() });
@@ -84,7 +85,7 @@ financeiroRouter.put("/financeiro/lancamentos/:id", asyncHandler(async (req, res
   res.json(lancamento);
 }));
 
-financeiroRouter.post("/financeiro/lancamentos/:id/liquidar", asyncHandler(async (req, res) => {
+financeiroRouter.post("/financeiro/lancamentos/:id/liquidar", somenteGestao, asyncHandler(async (req, res) => {
   if (!(await buscarLancamentoOu404(req.params.id))) {
     res.status(404).json({ erro: "Lançamento não encontrado" });
     return;
@@ -98,7 +99,7 @@ financeiroRouter.post("/financeiro/lancamentos/:id/liquidar", asyncHandler(async
   res.json(lancamento);
 }));
 
-financeiroRouter.post("/financeiro/lancamentos/:id/reabrir", asyncHandler(async (req, res) => {
+financeiroRouter.post("/financeiro/lancamentos/:id/reabrir", somenteGestao, asyncHandler(async (req, res) => {
   if (!(await buscarLancamentoOu404(req.params.id))) {
     res.status(404).json({ erro: "Lançamento não encontrado" });
     return;
@@ -112,7 +113,7 @@ financeiroRouter.post("/financeiro/lancamentos/:id/reabrir", asyncHandler(async 
   res.json(lancamento);
 }));
 
-financeiroRouter.delete("/financeiro/lancamentos/:id", asyncHandler(async (req, res) => {
+financeiroRouter.delete("/financeiro/lancamentos/:id", somenteGestao, asyncHandler(async (req, res) => {
   if (!(await buscarLancamentoOu404(req.params.id))) {
     res.status(404).json({ erro: "Lançamento não encontrado" });
     return;

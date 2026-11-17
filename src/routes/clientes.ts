@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
+import { somenteGestao } from "../middleware/perfil.js";
 import { recalcularFuturas } from "../obrigacoes/gerar-entregas.js";
 import { prisma } from "../prisma.js";
 import { completarEmSegundoPlano } from "../clientes/completar.js";
@@ -240,7 +241,7 @@ clientesRouter.put("/clientes/:id", asyncHandler(async (req, res) => {
   res.json({ ...cliente, obrigacoesAplicadas });
 }));
 
-clientesRouter.delete("/clientes/:id", asyncHandler(async (req, res) => {
+clientesRouter.delete("/clientes/:id", somenteGestao, asyncHandler(async (req, res) => {
   const clienteExistente = await prisma.cliente.findUnique({ where: { id: req.params.id } });
   if (!clienteExistente) {
     res.status(404).json({ erro: "Cliente não encontrado" });
