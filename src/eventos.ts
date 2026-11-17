@@ -6,7 +6,11 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { verificarToken } from "./auth.js";
 
-export type Evento = { tipo: "conversa"; conversaId: string } | { tipo: "notificacao"; usuarioId: string };
+export type Evento =
+  | { tipo: "conversa"; conversaId: string }
+  | { tipo: "notificacao"; usuarioId: string }
+  // Qualquer mudança em leads/agenda: as telas de Leads e Agenda recarregam.
+  | { tipo: "leads" };
 
 const barramento = new EventEmitter();
 barramento.setMaxListeners(0);

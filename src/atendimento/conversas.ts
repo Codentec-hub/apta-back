@@ -5,6 +5,7 @@ import { emitirEvento } from "../eventos.js";
 import { prisma } from "../prisma.js";
 import { provedorWhatsApp } from "../whatsapp/provedor.js";
 import { chaveTelefone, normalizarTelefone } from "../whatsapp/telefone.js";
+import { aoReceberDoLead } from "../leads/leads.js";
 import { acionarAgente } from "./agente.js";
 import { estaAberto, responsavelSugerido } from "./sessao.js";
 
@@ -140,7 +141,13 @@ export async function receberMensagem(entrada: MensagemRecebida) {
     status: "RECEBIDA",
     idExterno: entrada.idExterno ?? null,
   });
-  if (conversa.modo === "AGENTE") {
+  // Lead: vincula quem chamou primeiro, marca a resposta e trata "sair".
+  const silenciar = await aoReceberDoLead(conversa.id, conversa.telefone, entrada.texto).catch((error) => {
+    console.error("[leads]", error);
+    return false;
+  });
+  const modo = (await prisma.conversa.findUnique({ where: { id: conversa.id }, select: { modo: true } }))?.modo;
+  if (modo === "AGENTE" && !silenciar) {
     acionarAgente(conversa.id).catch((error) => console.error("[agente]", error));
   }
   return mensagem;

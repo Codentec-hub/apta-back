@@ -33,6 +33,7 @@ const conversaInclude = {
   cliente: { select: { id: true, razaoSocial: true, nomeFantasia: true, apelido: true, codigo: true, cnpj: true } },
   contato: { select: { id: true, nome: true, cargo: true } },
   agente: { select: { id: true, nome: true } },
+  lead: { select: { id: true, nome: true, status: true } },
   atendimentos: {
     orderBy: { abertoEm: "desc" },
     take: 1,

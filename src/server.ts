@@ -40,6 +40,10 @@ import { agentesRouter } from "./routes/agentes.js";
 import { eventosRouter } from "./eventos.js";
 import { consultaCnpjRouter } from "./routes/consulta-cnpj.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
+import { leadsRouter } from "./routes/leads.js";
+import { agendaRouter } from "./routes/agenda.js";
+import { configuracaoLeadsRouter } from "./routes/configuracao-leads.js";
+import { agendarDisparoLeads } from "./leads/disparo.js";
 
 const app = express();
 // Atrás do proxy do EasyPanel: req.ip passa a ser o IP real do usuário.
@@ -94,6 +98,9 @@ app.use(saudeFiscalRouter);
 app.use(conversasRouter);
 app.use(agentesRouter);
 app.use(consultaCnpjRouter);
+app.use(leadsRouter);
+app.use(agendaRouter);
+app.use(configuracaoLeadsRouter);
 
 // Rede de segurança: qualquer erro não tratado numa rota cai aqui em vez de
 // derrubar o processo (evita que um erro do Prisma, por exemplo, tire a API
@@ -113,6 +120,7 @@ app.listen(port, () => {
   agendarLimpezaAuditoria(prismaBase);
   void carregarEscritorio();
   agendarNotificacoes();
+  agendarDisparoLeads();
   agendarSaudeFiscal();
   agendarPreenchimentoClientes();
 });

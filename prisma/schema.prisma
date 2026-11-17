@@ -56,20 +56,23 @@ model Usuario {
   setorId String? @map("setor_id")
   setor   Setor?  @relation(fields: [setorId], references: [id])
 
-  setoresResponsavel Setor[]              @relation("ResponsavelSetor")
-  comentariosEntrega ComentarioEntrega[]
-  documentosEnviados DocumentoEntrega[]
-  protocolos         ProtocoloEntrega[]
-  responsabilidades  ClienteResponsavel[]
-  obrigacoes         Obrigacao[]
-  entregasFeitas     Obrigacao[]          @relation("EntreguePor")
-  obrigacoesEmpresa  ClienteObrigacao[]
-  logsObrigacao      LogObrigacao[]
-  demandas           Demanda[]
-  atendimentos       Atendimento[]
-  mensagens          Mensagem[]
-  notificacoes       Notificacao[]
+  setoresResponsavel      Setor[]                  @relation("ResponsavelSetor")
+  comentariosEntrega      ComentarioEntrega[]
+  documentosEnviados      DocumentoEntrega[]
+  protocolos              ProtocoloEntrega[]
+  responsabilidades       ClienteResponsavel[]
+  obrigacoes              Obrigacao[]
+  entregasFeitas          Obrigacao[]              @relation("EntreguePor")
+  obrigacoesEmpresa       ClienteObrigacao[]
+  logsObrigacao           LogObrigacao[]
+  demandas                Demanda[]
+  atendimentos            Atendimento[]
+  mensagens               Mensagem[]
+  notificacoes            Notificacao[]
   preferenciasNotificacao PreferenciaNotificacao[]
+  leadsCadastrados        Lead[]
+  agendamentosConfirmados Agendamento[]            @relation("ConfirmadoPor")
+  disponibilidadesAgenda  DisponibilidadeAgenda[]
 
   @@map("usuarios")
 }
@@ -93,23 +96,23 @@ model Cliente {
   honorario     Float?
 
   // Dados fiscais (preenchidos pela consulta do CNPJ e completados à mão).
-  dataAbertura       DateTime? @map("data_abertura") @db.Date
-  situacaoCadastral  String?   @map("situacao_cadastral") // na Receita: ATIVA, BAIXADA...
-  cnaePrincipal      String?   @map("cnae_principal") // "4721-1/02"
-  cnaeDescricao      String?   @map("cnae_descricao")
+  dataAbertura        DateTime? @map("data_abertura") @db.Date
+  situacaoCadastral   String?   @map("situacao_cadastral") // na Receita: ATIVA, BAIXADA...
+  cnaePrincipal       String?   @map("cnae_principal") // "4721-1/02"
+  cnaeDescricao       String?   @map("cnae_descricao")
   // [{ codigo, descricao }]
-  cnaesSecundarios   Json?     @map("cnaes_secundarios")
+  cnaesSecundarios    Json?     @map("cnaes_secundarios")
   // "servicos" | "comercio" | "industria" | "particular"
-  atividades         String[]  @default([])
+  atividades          String[]  @default([])
   // Itens marcados da Lista de Serviços da LC 116/2003, só quando atividades
   // inclui "servicos" -- [{ codigo, descricao }]
-  servicosPrestados  Json?     @map("servicos_prestados")
-  inscricaoEstadual  String?   @map("inscricao_estadual")
-  inscricaoMunicipal String?   @map("inscricao_municipal")
+  servicosPrestados   Json?     @map("servicos_prestados")
+  inscricaoEstadual   String?   @map("inscricao_estadual")
+  inscricaoMunicipal  String?   @map("inscricao_municipal")
   // Notas que a empresa emite: "nfse" | "nfe" | "nfce" | "cte"
-  notasEmitidas      String[]  @default([]) @map("notas_emitidas")
-  cep                String?
-  endereco           String?
+  notasEmitidas       String[]  @default([]) @map("notas_emitidas")
+  cep                 String?
+  endereco            String?
   // Última consulta automática na Receita (preenchimento do cadastro); evita
   // consultar de novo o mesmo CNPJ toda noite.
   receitaConsultadaEm DateTime? @map("receita_consultada_em")
@@ -495,20 +498,20 @@ model ProtocoloEntrega {
 // Configuração geral do envio de e-mails ao cliente (linha única, id = 1).
 // Espelha "Configurações do envio dos e-mails" do Acessórias.
 model ConfiguracaoEnvio {
-  id                   Int      @id @default(1)
+  id                    Int      @id @default(1)
   // Lembrete de guia não lida: quantos dias antes do vencimento avisar o
   // cliente (vale para os tipos de obrigação com `alertaNaoLida`).
-  diasAlertaNaoLida    Int[]    @default([3, 1]) @map("dias_alerta_nao_lida")
-  prefixoAlertaNaoLida String   @default("[Guia não visualizada]") @map("prefixo_alerta_nao_lida")
+  diasAlertaNaoLida     Int[]    @default([3, 1]) @map("dias_alerta_nao_lida")
+  prefixoAlertaNaoLida  String   @default("[Guia não visualizada]") @map("prefixo_alerta_nao_lida")
   // Texto opcional em destaque no topo do e-mail de lembrete.
-  avisoCabecalho       String?  @map("aviso_cabecalho")
+  avisoCabecalho        String?  @map("aviso_cabecalho")
   // Relatório mensal de saúde fiscal (gerado e enviado sozinho no dia).
   saudeFiscalAutomatico Boolean  @default(false) @map("saude_fiscal_automatico")
   saudeFiscalDia        Int      @default(15) @map("saude_fiscal_dia")
   saudeFiscalCanais     String[] @default(["email", "whatsapp"]) @map("saude_fiscal_canais")
   // Último mês (AAAA-MM) já enviado em lote, pra não repetir no mesmo mês.
   saudeFiscalUltimoLote String?  @map("saude_fiscal_ultimo_lote")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@map("configuracao_envio")
 }
@@ -753,6 +756,7 @@ model Conversa {
 
   mensagens    Mensagem[]
   atendimentos Atendimento[]
+  lead         Lead?
 
   @@index([ultimaMensagemEm])
   @@map("conversas")
@@ -932,9 +936,9 @@ model RelatorioSaudeFiscal {
   acessos    Int       @default(0)
   createdAt  DateTime  @default(now()) @map("created_at")
 
-  clienteId String   @map("cliente_id")
-  cliente   Cliente  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
-  usuarioId String?  @map("usuario_id")
+  clienteId String  @map("cliente_id")
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  usuarioId String? @map("usuario_id")
 
   @@index([clienteId, mes])
   @@map("relatorios_saude_fiscal")
@@ -1043,4 +1047,141 @@ model PreferenciaNotificacao {
 
   @@id([usuarioId, tipo])
   @@map("preferencias_notificacao")
+}
+
+// ── Leads e agendamento ─────────────────────────────────────────────────
+// Lead passado pelo comercial (Rafael/ADS): o Assistente de Leads chama no
+// WhatsApp, confere o perfil, oferece horários e pré-reserva; a equipe
+// (Letícia) confirma o agendamento.
+
+enum StatusLead {
+  NOVO // cadastrado, ainda não enviado ao assistente
+  NA_FILA // aguardando o disparo espaçado da 1ª mensagem
+  EM_CONVERSA // assistente conversando
+  FORA_DO_PERFIL // assistente encerrou (não é o público)
+  DADOS_COLETADOS // perfil completo, falta escolher horário
+  AGUARDANDO_CONFIRMACAO // horário pré-reservado, falta a equipe confirmar
+  AGENDADO
+  SEM_RESPOSTA // não respondeu nem ao lembrete
+  DESCARTADO // pediu para sair, sem interesse ou descartado à mão
+}
+
+model Lead {
+  id                 String     @id @default(uuid())
+  nome               String
+  telefone           String     @unique // só dígitos com DDI, como Conversa.telefone
+  email              String?
+  origem             String? // ex.: "Meta Ads", "indicação"
+  observacoes        String? // informações passadas por quem cadastrou
+  qualificacao       String? // ex.: "Lead altamente qualificado — ..."
+  status             StatusLead @default(NOVO)
+  // Respostas do formulário/conversa: { chave: valor } (ver leads/campos.ts).
+  perfil             Json?
+  motivoEncerramento String?    @map("motivo_encerramento")
+  naFilaEm           DateTime?  @map("na_fila_em")
+  primeiraMensagemEm DateTime?  @map("primeira_mensagem_em")
+  lembreteEnviadoEm  DateTime?  @map("lembrete_enviado_em")
+  ultimaRespostaEm   DateTime?  @map("ultima_resposta_em")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+
+  cadastradoPorId String?   @map("cadastrado_por_id")
+  cadastradoPor   Usuario?  @relation(fields: [cadastradoPorId], references: [id], onDelete: SetNull)
+  conversaId      String?   @unique @map("conversa_id")
+  conversa        Conversa? @relation(fields: [conversaId], references: [id], onDelete: SetNull)
+
+  agendamentos Agendamento[]
+
+  @@index([status])
+  @@index([naFilaEm])
+  @@map("leads")
+}
+
+// Grade semanal de atendimento (ex.: seg 09:00–12:00, reuniões de 30 min).
+model DisponibilidadeAgenda {
+  id         String  @id @default(uuid())
+  diaSemana  Int     @map("dia_semana") // 0 = domingo … 6 = sábado
+  inicio     String // "09:00" (horário de Fortaleza/Brasília)
+  fim        String // "12:00"
+  duracaoMin Int     @default(30) @map("duracao_min")
+  ativo      Boolean @default(true)
+
+  responsavelId String?  @map("responsavel_id")
+  responsavel   Usuario? @relation(fields: [responsavelId], references: [id], onDelete: SetNull)
+
+  @@map("disponibilidades_agenda")
+}
+
+// Bloqueios pontuais (folga, feriado extra, compromisso).
+model BloqueioAgenda {
+  id        String   @id @default(uuid())
+  inicio    DateTime
+  fim       DateTime
+  motivo    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([inicio])
+  @@map("bloqueios_agenda")
+}
+
+enum StatusAgendamento {
+  PRE_RESERVADO // o assistente reservou, aguardando a equipe
+  CONFIRMADO
+  CANCELADO
+  EXPIRADO // pré-reserva não confirmada no prazo
+}
+
+model Agendamento {
+  id                 String            @id @default(uuid())
+  inicio             DateTime
+  fim                DateTime
+  status             StatusAgendamento @default(PRE_RESERVADO)
+  expiraEm           DateTime?         @map("expira_em") // prazo da pré-reserva
+  confirmadoEm       DateTime?         @map("confirmado_em")
+  canceladoEm        DateTime?         @map("cancelado_em")
+  motivoCancelamento String?           @map("motivo_cancelamento")
+  observacoes        String?
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  leadId          String   @map("lead_id")
+  lead            Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  confirmadoPorId String?  @map("confirmado_por_id")
+  confirmadoPor   Usuario? @relation("ConfirmadoPor", fields: [confirmadoPorId], references: [id], onDelete: SetNull)
+
+  @@index([inicio])
+  @@index([status])
+  @@map("agendamentos")
+}
+
+// Parâmetros do assistente de leads (linha única, id = 1).
+model ConfiguracaoLeads {
+  id                   Int       @id @default(1)
+  // Pausa geral da fila: nada sai enquanto estiver desligado.
+  disparoAtivo         Boolean   @default(true) @map("disparo_ativo")
+  // Cadastrou → já entra na fila (senão, alguém clica em "Enviar ao assistente").
+  disparoAutomatico    Boolean   @default(false) @map("disparo_automatico")
+  intervaloMinMin      Int       @default(3) @map("intervalo_min_min")
+  intervaloMaxMin      Int       @default(8) @map("intervalo_max_min")
+  tetoDiario           Int       @default(25) @map("teto_diario")
+  horaInicio           String    @default("08:00") @map("hora_inicio")
+  horaFim              String    @default("19:00") @map("hora_fim")
+  diasSemana           Int[]     @default([1, 2, 3, 4, 5, 6]) @map("dias_semana")
+  lembreteHoras        Int       @default(24) @map("lembrete_horas")
+  prazoPreReservaHoras Int       @default(24) @map("prazo_pre_reserva_horas")
+  antecedenciaMinHoras Int       @default(2) @map("antecedencia_min_horas")
+  diasAgendaAberta     Int       @default(14) @map("dias_agenda_aberta")
+  nomeIndicador        String    @default("Rafael") @map("nome_indicador")
+  mensagensIniciais    String[]  @default([]) @map("mensagens_iniciais")
+  mensagemLembrete     String?   @map("mensagem_lembrete")
+  enviarConfirmacao    Boolean   @default(true) @map("enviar_confirmacao")
+  mensagemConfirmacao  String?   @map("mensagem_confirmacao")
+  formatoAtendimento   String    @default("por videochamada") @map("formato_atendimento")
+  // Quem recebe o aviso de pré-reserva; vazio = gestores e administradores.
+  notificarIds         String[]  @default([]) @map("notificar_ids")
+  proximoDisparoEm     DateTime? @map("proximo_disparo_em")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  agenteId String? @map("agente_id")
+
+  @@map("configuracao_leads")
 }

@@ -35,6 +35,11 @@ export const MODULO_DO_MODELO: Record<string, string> = {
   LancamentoFinanceiro: "financeiro",
   PendenciaCliente: "saúde fiscal",
   RelatorioSaudeFiscal: "saúde fiscal",
+  Lead: "leads",
+  Agendamento: "agenda",
+  DisponibilidadeAgenda: "agenda",
+  BloqueioAgenda: "agenda",
+  ConfiguracaoLeads: "configurações",
 };
 
 const NOME_DO_MODELO: Record<string, string> = {
@@ -67,6 +72,11 @@ const NOME_DO_MODELO: Record<string, string> = {
   LancamentoFinanceiro: "Lançamento financeiro",
   PendenciaCliente: "Pendência",
   RelatorioSaudeFiscal: "Relatório de saúde fiscal",
+  Lead: "Lead",
+  Agendamento: "Agendamento",
+  DisponibilidadeAgenda: "Horário de atendimento",
+  BloqueioAgenda: "Bloqueio da agenda",
+  ConfiguracaoLeads: "Configuração de leads",
 };
 
 const SENSIVEL = /senha|token|secret|segredo|apikey|api_key|chave(api|_api)?$|password/i;

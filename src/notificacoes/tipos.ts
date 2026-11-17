@@ -128,6 +128,24 @@ export const TIPOS_NOTIFICACAO = {
     gestao: true,
     padrao: { app: true, email: false },
   },
+  lead_pre_reserva: {
+    rotulo: "Agendamento para confirmar",
+    descricao: "O assistente pré-reservou um horário com um lead e falta a equipe confirmar.",
+    categoria: "leads e agenda",
+    padrao: { app: true, email: true },
+  },
+  lead_pre_reserva_expirada: {
+    rotulo: "Pré-reserva expirada",
+    descricao: "Uma pré-reserva não foi confirmada no prazo e o horário foi liberado.",
+    categoria: "leads e agenda",
+    padrao: { app: true, email: false },
+  },
+  lead_precisa_humano: {
+    rotulo: "Lead precisa de atendimento",
+    descricao: "O assistente passou a conversa de um lead para a equipe (dúvida fora do roteiro, pedido para falar com alguém ou falha).",
+    categoria: "leads e agenda",
+    padrao: { app: true, email: false },
+  },
   conta_alterada: {
     rotulo: "Mudança na sua conta",
     descricao: "Seu perfil ou setor foi alterado por um administrador.",

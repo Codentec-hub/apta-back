@@ -6,6 +6,8 @@
 import type { Cliente } from "@prisma/client";
 import { linkPublico } from "../envio/mensagem-protocolo.js";
 import { prisma } from "../prisma.js";
+import { contextoDoLead, executarFerramentaLead, ferramentasDoLead, type Ferramenta } from "../leads/ferramentas.js";
+import { ENCERRADOS, avisarEquipe } from "../leads/leads.js";
 import { enviarMensagem, registrarSistema } from "./conversas.js";
 
 // Quantas mensagens recentes (cliente + agente/atendente) entram no contexto
@@ -101,22 +103,37 @@ function contextoCliente(cliente: Cliente | null): string {
     .join(" ");
 }
 
-async function chamarGemini(
-  instrucoes: string,
-  historicoInicial: ConteudoGemini[],
-  opcoes: { clienteId: string | null }
-): Promise<string> {
+type Executor = (nome: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+
+interface OpcoesGemini {
+  ferramentas: Ferramenta[];
+  executar: Executor;
+}
+
+// Ferramentas por contexto: conversa de lead usa as de agenda/perfil;
+// cliente identificado usa enviar_declaracao; contato desconhecido, nenhuma.
+function opcoesCliente(clienteId: string | null): OpcoesGemini {
+  if (!clienteId) return { ferramentas: [], executar: async () => ({ erro: "Sem ferramentas nesta conversa" }) };
+  return {
+    ferramentas: [FERRAMENTA_DECLARACAO],
+    executar: async (nome) =>
+      nome === "enviar_declaracao" ? buscarDeclaracaoParaEnvio(clienteId) : { erro: `Ferramenta desconhecida: ${nome}` },
+  };
+}
+
+async function chamarGemini(instrucoes: string, historicoInicial: ConteudoGemini[], opcoes: OpcoesGemini): Promise<string> {
   const { apiKey, modelo } = await configGemini();
   if (!apiKey) {
     throw new Error("Gemini não configurado (tela Agentes e IA ou GEMINI_API_KEY)");
   }
 
-  const ferramentas = opcoes.clienteId ? [{ functionDeclarations: [FERRAMENTA_DECLARACAO] }] : undefined;
+  const ferramentas = opcoes.ferramentas.length ? [{ functionDeclarations: opcoes.ferramentas }] : undefined;
+  const nomesPermitidos = new Set(opcoes.ferramentas.map((f) => f.name));
   const contents: ConteudoGemini[] = [...historicoInicial];
 
-  // No máximo 2 idas e vindas com ferramenta — suficiente pro único caso de
-  // uso hoje, e evita loop infinito se o Gemini insistir em chamar de novo.
-  const MAX_RODADAS_FERRAMENTA = 2;
+  // Até 4 idas e vindas com ferramenta ("consultar horários → reservar" já
+  // usa duas); evita loop infinito se o Gemini insistir em chamar de novo.
+  const MAX_RODADAS_FERRAMENTA = 4;
 
   for (let rodada = 0; rodada <= MAX_RODADAS_FERRAMENTA; rodada++) {
     const resposta = await fetch(
@@ -139,15 +156,18 @@ async function chamarGemini(
       candidates?: { content?: { parts?: ParteGemini[] } }[];
     };
     const parts = dados.candidates?.[0]?.content?.parts ?? [];
-    const chamada = parts.find((parte) => parte.functionCall)?.functionCall;
+    const chamadas = parts.filter((parte) => parte.functionCall).map((parte) => parte.functionCall!);
 
-    if (chamada && chamada.name === "enviar_declaracao" && opcoes.clienteId) {
+    if (chamadas.length && rodada < MAX_RODADAS_FERRAMENTA) {
       contents.push({ role: "model", parts });
-      const resultado = await buscarDeclaracaoParaEnvio(opcoes.clienteId);
-      contents.push({
-        role: "user",
-        parts: [{ functionResponse: { name: "enviar_declaracao", response: resultado } }],
-      });
+      const respostas: ParteGemini[] = [];
+      for (const chamada of chamadas) {
+        const resultado = nomesPermitidos.has(chamada.name)
+          ? await opcoes.executar(chamada.name, chamada.args ?? {})
+          : { erro: `Ferramenta não disponível: ${chamada.name}` };
+        respostas.push({ functionResponse: { name: chamada.name, response: resultado } });
+      }
+      contents.push({ role: "user", parts: respostas });
       continue;
     }
 
@@ -176,7 +196,7 @@ function aguardar(ms: number): Promise<void> {
 async function chamarGeminiComRetentativas(
   instrucoes: string,
   historico: ConteudoGemini[],
-  opcoes: { clienteId: string | null }
+  opcoes: OpcoesGemini
 ): Promise<string> {
   let ultimoErro: unknown;
   for (let tentativa = 1; tentativa <= TENTATIVAS_GEMINI; tentativa++) {
@@ -201,7 +221,40 @@ async function voltarParaHumano(conversaId: string, motivo: string) {
   await prisma.conversa.update({ where: { id: conversaId }, data: { modo: "HUMANO" } });
 }
 
+// Uma resposta por vez em cada conversa: se o cliente manda três mensagens
+// seguidas, o agente responde uma vez só, olhando todas.
+const emAndamento = new Map<string, boolean>();
+
 export async function acionarAgente(conversaId: string): Promise<void> {
+  if (emAndamento.has(conversaId)) {
+    emAndamento.set(conversaId, true); // roda de novo quando a atual terminar
+    return;
+  }
+  emAndamento.set(conversaId, false);
+  try {
+    do {
+      emAndamento.set(conversaId, false);
+      await responderComAgente(conversaId);
+    } while (emAndamento.get(conversaId));
+  } finally {
+    emAndamento.delete(conversaId);
+  }
+}
+
+// Junta mensagens seguidas do mesmo lado (o Gemini espera usuário/modelo
+// alternados) e garante que a conversa começa pelo usuário.
+function alternar(mensagens: ConteudoGemini[]): ConteudoGemini[] {
+  const saida: ConteudoGemini[] = [];
+  for (const m of mensagens) {
+    const ultima = saida.at(-1);
+    if (ultima && ultima.role === m.role) ultima.parts.push(...m.parts);
+    else saida.push({ role: m.role, parts: [...m.parts] });
+  }
+  if (saida[0]?.role === "model") saida.unshift({ role: "user", parts: [{ text: "(Conversa iniciada pela Apta.)" }] });
+  return saida;
+}
+
+async function responderComAgente(conversaId: string): Promise<void> {
   if (!(await motorAgenteConfigurado())) {
     console.log(`[agente] Conversa ${conversaId} em modo agente, mas o motor ainda não está configurado.`);
     return;
@@ -209,7 +262,7 @@ export async function acionarAgente(conversaId: string): Promise<void> {
 
   const conversa = await prisma.conversa.findUnique({
     where: { id: conversaId },
-    include: { agente: true, cliente: true },
+    include: { agente: true, cliente: true, lead: true },
   });
   if (!conversa || conversa.modo !== "AGENTE" || !conversa.agente) {
     return;
@@ -218,34 +271,51 @@ export async function acionarAgente(conversaId: string): Promise<void> {
     await voltarParaHumano(conversaId, `agente "${conversa.agente.nome}" está desativado`);
     return;
   }
+  const lead = conversa.lead && !ENCERRADOS.includes(conversa.lead.status) ? conversa.lead : null;
 
   // "desc" + take pra pegar as HISTORICO_MAX mais RECENTES (não as mais
-  // antigas); depois reverte pra ordem cronológica que a API espera.
+  // antigas); depois reverte pra ordem cronológica que a API espera. Na
+  // conversa de lead, a primeira mensagem automática também entra.
+  const autores = lead ? (["CLIENTE", "AGENTE", "ATENDENTE", "AUTOMACAO"] as const) : (["CLIENTE", "AGENTE", "ATENDENTE"] as const);
   const mensagensRecentes = await prisma.mensagem.findMany({
-    where: { conversaId, interna: false, autor: { in: ["CLIENTE", "AGENTE", "ATENDENTE"] } },
+    where: { conversaId, interna: false, autor: { in: [...autores] } },
     orderBy: { createdAt: "desc" },
     take: HISTORICO_MAX,
     select: { autor: true, texto: true },
   });
   const mensagens = mensagensRecentes.reverse();
-  const historico: ConteudoGemini[] = mensagens
-    .filter((mensagem) => mensagem.texto)
-    .map((mensagem) => ({
-      role: mensagem.autor === "CLIENTE" ? "user" : "model",
-      parts: [{ text: mensagem.texto! }],
-    }));
-  if (historico.length === 0 || historico[0].role !== "user") {
-    return; // precisa de pelo menos uma mensagem do cliente para responder
-  }
+  const historico = alternar(
+    mensagens
+      .filter((mensagem) => mensagem.texto)
+      .map((mensagem) => ({
+        role: mensagem.autor === "CLIENTE" ? ("user" as const) : ("model" as const),
+        parts: [{ text: mensagem.texto! }],
+      }))
+  );
+  // Precisa de mensagem do cliente, e a última tem que ser dele.
+  if (!historico.some((m) => m.role === "user" && m.parts.some((p) => p.text !== "(Conversa iniciada pela Apta.)"))) return;
+  if (historico.at(-1)?.role !== "user") return;
 
-  const instrucoesFinais = `${contextoCliente(conversa.cliente)}\n\n${conversa.agente.instrucoes}`;
+  const contexto = lead ? await contextoDoLead(lead) : contextoCliente(conversa.cliente);
+  const instrucoesFinais = `${contexto}\n\n${conversa.agente.instrucoes}`;
+  const opcoes: OpcoesGemini = lead
+    ? { ferramentas: ferramentasDoLead(lead), executar: (nome, args) => executarFerramentaLead(lead.id, nome, args) }
+    : opcoesCliente(conversa.clienteId);
 
   try {
-    const resposta = await chamarGeminiComRetentativas(instrucoesFinais, historico, {
-      clienteId: conversa.clienteId,
-    });
+    const resposta = await chamarGeminiComRetentativas(instrucoesFinais, historico, opcoes);
     await enviarMensagem({ conversaId, texto: resposta, autor: "AGENTE", agenteId: conversa.agente.id });
   } catch (error) {
     await voltarParaHumano(conversaId, error instanceof Error ? error.message : String(error));
+    if (lead) {
+      await avisarEquipe(lead, {
+        tipo: "lead_precisa_humano",
+        titulo: `${lead.nome} ficou sem resposta do assistente`,
+        mensagem: "O assistente não conseguiu responder agora e a conversa voltou para a equipe.",
+        severidade: "erro",
+        href: `/dashboard/atendimento?conversa=${conversaId}`,
+        chave: `lead-falha-ia:${lead.id}:${Date.now()}`,
+      });
+    }
   }
 }
