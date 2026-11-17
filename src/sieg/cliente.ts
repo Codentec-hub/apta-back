@@ -108,6 +108,18 @@ interface Opcoes {
  * Chama uma rota de LEITURA da SIEG com JWT do sistema + token OAuth da conta.
  * Lança ErroSieg com a mensagem da SIEG quando a resposta não for 2xx.
  */
+/** Corpo sem JSON: página HTML do proxy (502/503/504) vira uma frase simples. */
+export function motivoDoTexto(status: number, texto: string): string {
+  const t = texto.trim();
+  if (/^<(!doctype|html)/i.test(t) || /<\/?(html|head|body|title)\b/i.test(t)) {
+    if (status === 504 || status === 408) return "a SIEG não respondeu a tempo (tempo esgotado); tenta de novo na próxima busca";
+    if (status === 502 || status === 503) return "a SIEG está fora do ar ou sobrecarregada no momento; tenta de novo na próxima busca";
+    const titulo = t.match(/<title>([^<]*)<\/title>/i)?.[1]?.trim();
+    return titulo ? `página de erro da SIEG (${titulo})` : "página de erro da SIEG, sem detalhes";
+  }
+  return t.slice(0, 300) || "sem detalhes";
+}
+
 export async function chamarSieg<T = unknown>(rota: string, opcoes: Opcoes = {}): Promise<T> {
   const config = ROTAS_PERMITIDAS[rota];
   if (!config) {
@@ -168,7 +180,7 @@ export async function chamarSieg<T = unknown>(rota: string, opcoes: Opcoes = {})
     }
 
     if (!resposta.ok) {
-      const motivo = mensagemSieg(corpo) || texto.slice(0, 300) || "sem detalhes";
+      const motivo = mensagemSieg(corpo) || motivoDoTexto(resposta.status, texto);
       // 404 "nenhum ... encontrado" é o jeito da SIEG dizer "lista acabou" ou
       // "mês sem notas": registra a chamada, mas não como erro no painel.
       const fimDeLista = resposta.status === 404 && /nenhum/i.test(motivo);

@@ -1,4 +1,4 @@
-// Consulta de CNPJ na Receita (BrasilAPI) para a tela de cadastro.
+// Consulta de CNPJ na Receita (BrasilAPI; CNPJ.ws como reserva e para a IE) para a tela de cadastro.
 // Passa pelo backend para normalizar os dados e não depender de CORS.
 import { Router } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
@@ -23,7 +23,7 @@ consultaCnpjRouter.get("/consulta-cnpj/:cnpj", asyncHandler(async (req, res) => 
   });
 
   try {
-    res.json({ jaCadastrado, ...(await consultarReceita(cnpj)) });
+    res.json({ jaCadastrado, ...(await consultarReceita(cnpj, { comIe: true })) });
   } catch (error) {
     if (error instanceof ErroReceita) {
       res.status(error.status).json({ erro: error.message });

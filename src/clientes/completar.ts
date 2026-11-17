@@ -127,6 +127,7 @@ export async function completarCliente(clienteId: string, receita = true): Promi
       if (vazio(c.endereco) && r.endereco) dados["endereco"] = r.endereco;
       if (vazio(c.cidade) && r.cidade) dados["cidade"] = r.cidade;
       if (vazio(c.uf) && r.uf) dados["uf"] = r.uf;
+      if (vazio(c.inscricaoEstadual) && r.inscricaoEstadual) dados["inscricaoEstadual"] = r.inscricaoEstadual;
       if (!temResponsavel) {
         const nomes = new Set(c.contatos.map((x) => x.nome.toLowerCase()));
         // Sócio-administrador; sem ele, o titular/empresário (empresa individual) ou o presidente.
@@ -167,7 +168,7 @@ export async function completarCliente(clienteId: string, receita = true): Promi
   }
 
   // 4. Inscrições pelos XMLs guardados.
-  const precisaIe = vazio(c.inscricaoEstadual);
+  const precisaIe = vazio(c.inscricaoEstadual) && !dados["inscricaoEstadual"];
   const precisaIm = vazio(c.inscricaoMunicipal);
   if (precisaIe || precisaIm) {
     const { ie, im } = await inscricoesPelosXmls(documento, precisaIe, precisaIm);

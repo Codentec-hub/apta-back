@@ -2,7 +2,8 @@
 // de hora em hora).
 //  - Toda hora: renova o token OAuth se faltar menos de 7 dias (Fase C).
 //  - Uma vez por noite (a partir das 2h, horário de Brasília):
-//      1. atualiza a lista de empresas e o status dos certificados;
+//      1. atualiza a lista de empresas (o status dos certificados segue em
+//         paralelo com os passos 2 e 3);
 //      2. conta as notas do mês atual e, até o dia de corte, do anterior;
 //      3. ao mesmo tempo (filas de limite separadas), captura os XMLs que ainda faltam (contadas na SIEG > guardadas
 //         aqui), empresa por empresa. "Baixar XMLs" aceita 2 lotes de 50 por
@@ -212,20 +213,23 @@ export async function sincronizacaoCompleta(respeitarHorario = true): Promise<vo
     } catch (error) {
       erros.push(`empresas: ${error instanceof Error ? error.message : String(error)}`);
     }
-    etapa = "status dos certificados";
+    // Status dos certificados (~190 chamadas lentas) é só informativo: roda em
+    // paralelo. Em série, a captura só começava perto das 5h.
     const ativas = await prisma.siegEmpresa.findMany({ where: { ativo: true, deletado: false }, select: { id: true } });
-    for (const e of ativas) {
-      try {
-        await atualizarStatusCertificado(e.id);
-      } catch {
-        // status é informativo; segue para a próxima
+    const status = (async () => {
+      for (const e of ativas) {
+        try {
+          await atualizarStatusCertificado(e.id);
+        } catch {
+          // status é informativo; segue para a próxima
+        }
       }
-    }
+    })();
     const { meses } = await mesesAbertos();
     // Contagem e captura em paralelo: a contagem de ~190 empresas (5 por
     // minuto na SIEG) toma a madrugada inteira, e em série a captura começava
     // às 8h e parava sem baixar nada.
-    etapa = "contagem e captura de XMLs";
+    etapa = "contagem, captura de XMLs e status dos certificados";
     const contagem = (async () => {
       for (const mes of meses) {
         try {
@@ -240,7 +244,7 @@ export async function sincronizacaoCompleta(respeitarHorario = true): Promise<vo
     } catch (error) {
       erros.push(`captura: ${error instanceof Error ? error.message : String(error)}`);
     }
-    await contagem;
+    await Promise.all([contagem, status]);
     await limparRegistroChamadas();
   } finally {
     rodando = false;
