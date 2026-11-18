@@ -150,7 +150,40 @@ export async function receberMensagem(entrada: MensagemRecebida) {
   if (modo === "AGENTE" && !silenciar) {
     acionarAgente(conversa.id).catch((error) => console.error("[agente]", error));
   }
+  avisarMensagemNova(conversa.id, mensagem.id, entrada.texto, modo ?? "HUMANO").catch((error) =>
+    console.error("[mensagem]", error),
+  );
   return mensagem;
+}
+
+// Aviso em tempo real (toast + som nas telas abertas) de mensagem do cliente.
+async function avisarMensagemNova(conversaId: string, mensagemId: string, texto: string, modo: string) {
+  const [c, atendimento] = await Promise.all([
+    prisma.conversa.findUnique({
+      where: { id: conversaId },
+      select: {
+        telefone: true,
+        nomeExibicao: true,
+        contato: { select: { nome: true } },
+        cliente: { select: { razaoSocial: true, nomeFantasia: true } },
+        lead: { select: { nome: true } },
+      },
+    }),
+    atendimentoAberto(conversaId),
+  ]);
+  if (!c) return;
+  emitirEvento({
+    tipo: "mensagem",
+    conversaId,
+    mensagemId,
+    nome: c.contato?.nome ?? c.lead?.nome ?? c.nomeExibicao ?? c.telefone ?? "Cliente",
+    cliente: c.cliente ? (c.cliente.nomeFantasia ?? c.cliente.razaoSocial) : null,
+    texto: texto.trim().slice(0, 240),
+    modo,
+    responsavelId: atendimento?.responsavelId ?? null,
+    setorId: atendimento?.setorId ?? null,
+    lead: Boolean(c.lead),
+  });
 }
 
 export async function atualizarStatusMensagem(idExterno: string, status: StatusMensagem, erro?: string) {

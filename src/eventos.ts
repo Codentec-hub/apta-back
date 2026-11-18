@@ -10,7 +10,21 @@ export type Evento =
   | { tipo: "conversa"; conversaId: string }
   | { tipo: "notificacao"; usuarioId: string }
   // Qualquer mudança em leads/agenda: as telas de Leads e Agenda recarregam.
-  | { tipo: "leads" };
+  | { tipo: "leads" }
+  // Mensagem nova de cliente: cada tela decide (pelas preferências do
+  // usuário) se mostra aviso e toca som.
+  | {
+      tipo: "mensagem";
+      conversaId: string;
+      mensagemId: string;
+      nome: string;
+      cliente: string | null;
+      texto: string;
+      modo: string;
+      responsavelId: string | null;
+      setorId: string | null;
+      lead: boolean;
+    };
 
 const barramento = new EventEmitter();
 barramento.setMaxListeners(0);
