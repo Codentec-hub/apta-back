@@ -87,7 +87,7 @@ authRouter.post("/auth/login", asyncHandler(async (req, res) => {
 authRouter.get("/auth/me", autenticar, asyncHandler(async (req, res) => {
   const usuario = await prisma.usuario.findUnique({
     where: { id: req.usuario!.usuarioId },
-    select: { id: true, nome: true, email: true, perfil: true, setor: true },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
   });
 
   if (!usuario) {
@@ -111,9 +111,73 @@ authRouter.put("/auth/me", autenticar, asyncHandler(async (req, res) => {
   const usuario = await prisma.usuario.update({
     where: { id: req.usuario!.usuarioId },
     data: { nome: parsed.data.nome },
-    select: { id: true, nome: true, email: true, perfil: true, setor: true },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
   });
   res.json(usuario);
+}));
+
+// ------------------------------------------------------------- foto de perfil
+
+// O navegador já reduz a imagem (256px); aqui só confere tipo e tamanho.
+const FOTO_MAX = 300 * 1024;
+const fotoSchema = z.object({ imagem: z.string().regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/) });
+
+function tipoReal(b: Buffer): string | null {
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+
+authRouter.put("/auth/me/foto", autenticar, asyncHandler(async (req, res) => {
+  const parsed = fotoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ erro: "Envie uma imagem JPG, PNG ou WebP" });
+    return;
+  }
+  const dados = Buffer.from(parsed.data.imagem.split(",")[1] ?? "", "base64");
+  const mime = tipoReal(dados);
+  if (!mime) {
+    res.status(400).json({ erro: "O arquivo não é uma imagem válida" });
+    return;
+  }
+  if (dados.length > FOTO_MAX) {
+    res.status(400).json({ erro: "Imagem grande demais" });
+    return;
+  }
+  const usuarioId = req.usuario!.usuarioId;
+  await prismaBase.fotoUsuario.upsert({
+    where: { usuarioId },
+    create: { usuarioId, dados, mime },
+    update: { dados, mime },
+  });
+  const usuario = await prisma.usuario.update({
+    where: { id: usuarioId },
+    data: { fotoEm: new Date() },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
+  });
+  res.json(usuario);
+}));
+
+authRouter.delete("/auth/me/foto", autenticar, asyncHandler(async (req, res) => {
+  const usuarioId = req.usuario!.usuarioId;
+  await prismaBase.fotoUsuario.deleteMany({ where: { usuarioId } });
+  await prisma.usuario.update({ where: { id: usuarioId }, data: { fotoEm: null } });
+  res.status(204).send();
+}));
+
+// Sem login: <img> não manda o token. O id é um UUID e a URL leva a versão
+// (?v=), então pode ficar em cache para sempre.
+authRouter.get("/usuarios/:id/foto", asyncHandler(async (req, res) => {
+  const foto = await prismaBase.fotoUsuario.findUnique({ where: { usuarioId: req.params.id } });
+  if (!foto) {
+    res.status(404).end();
+    return;
+  }
+  res.setHeader("Content-Type", foto.mime);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.send(Buffer.from(foto.dados));
 }));
 
 const trocarSenhaSchema = z.object({

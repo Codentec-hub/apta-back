@@ -52,6 +52,9 @@ model Usuario {
   perfil    PerfilUsuario @default(OPERACIONAL)
   ativo     Boolean       @default(true)
   createdAt DateTime      @default(now()) @map("created_at")
+  // Quando a foto de perfil mudou (vai na URL da foto para o navegador não usar a antiga).
+  fotoEm    DateTime?     @map("foto_em")
+  foto      FotoUsuario?
 
   setorId String? @map("setor_id")
   setor   Setor?  @relation(fields: [setorId], references: [id])
@@ -1184,4 +1187,16 @@ model ConfiguracaoLeads {
   agenteId String? @map("agente_id")
 
   @@map("configuracao_leads")
+}
+
+// Foto de perfil (já reduzida no navegador, ~256px). Tabela à parte para não
+// pesar nas consultas de usuário nem entrar na trilha de auditoria.
+model FotoUsuario {
+  usuarioId String   @id @map("usuario_id")
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  dados     Bytes
+  mime      String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("fotos_usuario")
 }

@@ -18,6 +18,7 @@ const usuarioSelect = {
   ativo: true,
   setorId: true,
   setor: true,
+  fotoEm: true,
   createdAt: true,
 } as const;
 
