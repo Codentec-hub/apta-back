@@ -7,6 +7,7 @@ import { prisma } from "../prisma.js";
 import { CAMPOS_PERFIL, camposFaltando, perfilCompleto, perfilDe, rotuloDoCampo } from "./campos.js";
 import { ConflitoAgenda, descreverHorario, espalhar, horariosLivres, preReservar } from "./agenda.js";
 import { configLeads } from "./config.js";
+import { cnpjDoTexto, formatarCnpj, verificarDuplicidade } from "./duplicidade.js";
 import { avisarEquipe, encerrarLead, passarParaHumano } from "./leads.js";
 import { agoraPorExtenso, dataPorExtenso, instanteLocal } from "./tempo.js";
 
@@ -22,7 +23,10 @@ const SALVAR_PERFIL: Ferramenta = {
     "Grava as respostas que o lead deu sobre a situação dele. Chame sempre que ele responder algo do perfil (pode mandar só os campos novos).",
   parameters: {
     type: "OBJECT",
-    properties: Object.fromEntries(CAMPOS_PERFIL.map((c) => [c.chave, { type: "STRING", description: c.rotulo }])),
+    properties: {
+      ...Object.fromEntries(CAMPOS_PERFIL.map((c) => [c.chave, { type: "STRING", description: c.rotulo }])),
+      cnpj: { type: "STRING", description: "Número do CNPJ, se o lead informar" },
+    },
   },
 };
 
@@ -92,6 +96,7 @@ export async function contextoDoLead(lead: Lead): Promise<string> {
     `CONTATO: lead comercial "${lead.nome}", passado por ${config.nomeIndicador}${lead.origem ? ` (origem: ${lead.origem})` : ""}. Você já mandou a primeira mensagem (ou ele chamou primeiro).`,
     lead.observacoes ? `OBSERVAÇÕES DE QUEM CADASTROU: ${lead.observacoes}` : "",
     lead.qualificacao ? `QUALIFICAÇÃO: ${lead.qualificacao}` : "",
+    lead.cnpj ? `CNPJ INFORMADO: ${formatarCnpj(lead.cnpj)}` : "",
     respostas.length
       ? `O QUE JÁ SABEMOS (formulário/conversa — NÃO pergunte de novo, no máximo confirme algo se fizer sentido):\n${respostas.join("\n")}`
       : "Ainda não sabemos nada do perfil dele.",
@@ -123,15 +128,30 @@ export async function executarFerramentaLead(leadId: string, nome: string, args:
   try {
     switch (nome) {
       case "salvar_perfil": {
+        const { cnpj: cnpjDito, ...resto } = args;
         const novos = Object.fromEntries(
-          Object.entries(args).filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v]) => [k, String(v).trim()])
+          Object.entries(resto).filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v]) => [k, String(v).trim()])
         );
         const perfil = { ...perfilDe(lead.perfil), ...novos };
+        const cnpj = cnpjDoTexto(typeof cnpjDito === "string" ? cnpjDito : null) ?? (lead.cnpj ? null : cnpjDoTexto(Object.values(novos).join(" ")));
+        if (cnpj && !perfil.possuiCnpj) perfil.possuiCnpj = "Sim";
         const completo = perfilCompleto(perfil);
         await prisma.lead.update({
           where: { id: lead.id },
-          data: { perfil, ...(completo && lead.status === "EM_CONVERSA" ? { status: "DADOS_COLETADOS" } : {}) },
+          data: { perfil, ...(cnpj ? { cnpj } : {}), ...(completo && lead.status === "EM_CONVERSA" ? { status: "DADOS_COLETADOS" } : {}) },
         });
+        if (cnpj && cnpj !== lead.cnpj) {
+          // CNPJ que já é cliente da casa ou já está com outro lead: a equipe decide.
+          const avisos = (await verificarDuplicidade({ cnpj, excetoId: lead.id })).filter((a) => a.tipo === "cliente_cnpj" || a.tipo === "lead_cnpj");
+          if (avisos.length) {
+            await passarParaHumano(lead, avisos.map((a) => a.mensagem).join(" "));
+            return {
+              ok: true,
+              transferido: true,
+              mensagem: "Esse CNPJ já é conhecido da equipe. Diga que vai passar para alguém da equipe continuar o atendimento e não ofereça horários.",
+            };
+          }
+        }
         return { ok: true, perfilCompleto: completo, faltando: camposFaltando(perfil).map((c) => c.pergunta) };
       }
       case "consultar_horarios": {
@@ -149,6 +169,10 @@ export async function executarFerramentaLead(leadId: string, nome: string, args:
       case "reservar_horario": {
         const inicio = new Date(String(args.inicio ?? ""));
         if (Number.isNaN(inicio.getTime())) return { ok: false, erro: "Horário inválido; use o 'inicio' de consultar_horarios." };
+        const faltando = camposFaltando(perfilDe(lead.perfil));
+        if (faltando.length) {
+          return { ok: false, erro: `Antes de reservar, falta perguntar: ${faltando.map((c) => c.pergunta).join(" | ")}` };
+        }
         const agendamento = await preReservar(lead.id, inicio);
         await avisarEquipe(lead, {
           tipo: "lead_pre_reserva",

@@ -80,7 +80,17 @@ configuracaoLeadsRouter.put(
       res.status(400).json({ erro: "Agente não encontrado" });
       return;
     }
-    await configLeads();
+    // Confere contra o que já está salvo (a tela pode mandar só parte dos campos).
+    const atual = await configLeads();
+    const final = { ...atual, ...dados };
+    if (final.intervaloMaxMin < final.intervaloMinMin) {
+      res.status(400).json({ erro: "O intervalo máximo precisa ser maior ou igual ao mínimo" });
+      return;
+    }
+    if (paraMinutos(final.horaFim) <= paraMinutos(final.horaInicio)) {
+      res.status(400).json({ erro: "O horário final do envio precisa ser depois do inicial" });
+      return;
+    }
     await prisma.configuracaoLeads.update({ where: { id: 1 }, data: dados });
     emitirEvento({ tipo: "leads" });
     res.status(204).send();

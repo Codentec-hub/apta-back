@@ -99,9 +99,24 @@ async function abrirAtendimentoDeEntrada(conversa: { id: string; clienteId: stri
   });
 }
 
+/** Conversa do mesmo número ignorando DDI e nono dígito (ver whatsapp/telefone.ts). */
+export async function conversaPelaChave(telefone: string) {
+  const chave = chaveTelefone(telefone);
+  if (!chave) return null;
+  const candidatas = await prisma.conversa.findMany({
+    where: { telefone: { endsWith: chave.slice(-8) } },
+    orderBy: { ultimaMensagemEm: { sort: "desc", nulls: "last" } },
+  });
+  return candidatas.find((c) => c.telefone && chaveTelefone(c.telefone) === chave) ?? null;
+}
+
 export async function conversaDoTelefone(telefoneBruto: string, nomeExibicao?: string | null) {
   const telefone = normalizarTelefone(telefoneBruto);
-  const existente = await prisma.conversa.findUnique({ where: { telefone } });
+  // O WhatsApp às vezes entrega o celular sem o nono dígito: o mesmo número
+  // com e sem o 9 é a mesma conversa (senão a resposta do cliente cai numa
+  // conversa nova, sem histórico, e o assistente do lead não a vê).
+  const existente =
+    (await prisma.conversa.findUnique({ where: { telefone } })) ?? (await conversaPelaChave(telefone));
   if (existente) {
     if (nomeExibicao && !existente.nomeExibicao) {
       return prisma.conversa.update({ where: { id: existente.id }, data: { nomeExibicao } });

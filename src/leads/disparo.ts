@@ -9,8 +9,8 @@ import { emitirEvento } from "../eventos.js";
 import { prisma } from "../prisma.js";
 import { expirarPreReservas } from "./agenda.js";
 import { configLeads } from "./config.js";
-import { avisarEquipe, enviarLembrete, enviarPrimeiraMensagem } from "./leads.js";
-import { HORA_MS, MIN_MS, dataPorExtenso, diaLocal, diaSemanaLocal, instanteLocal, minutosLocais, paraMinutos } from "./tempo.js";
+import { enviarLembrete, enviarPrimeiraMensagem } from "./leads.js";
+import { HORA_MS, MIN_MS, diaLocal, diaSemanaLocal, instanteLocal, minutosLocais, paraMinutos } from "./tempo.js";
 
 export function dentroDoHorario(config: ConfiguracaoLeads, agora = new Date()): boolean {
   if (!config.diasSemana.includes(diaSemanaLocal(agora))) return false;
@@ -33,6 +33,8 @@ const precisaLembrete = (config: ConfiguracaoLeads, agora: Date) => ({
   ultimaRespostaEm: null,
   lembreteEnviadoEm: null,
   primeiraMensagemEm: { lte: new Date(agora.getTime() - config.lembreteHoras * HORA_MS) },
+  // Se a equipe assumiu a conversa, o lembrete automático não entra no meio.
+  conversa: { is: { modo: "AGENTE" as const } },
 });
 
 export async function situacaoDaFila(agora = new Date()) {
@@ -58,21 +60,6 @@ export async function situacaoDaFila(agora = new Date()) {
   };
 }
 
-async function tratarExpiradas(agora: Date) {
-  for (const a of await expirarPreReservas(agora)) {
-    if (a.lead.conversaId) {
-      await registrarSistema(a.lead.conversaId, `Pré-reserva de ${dataPorExtenso(a.inicio)} expirou sem confirmação; o horário foi liberado.`);
-    }
-    await avisarEquipe(a.lead, {
-      tipo: "lead_pre_reserva_expirada",
-      titulo: `Pré-reserva expirada: ${a.lead.nome}`,
-      mensagem: `O horário de ${dataPorExtenso(a.inicio)} não foi confirmado no prazo e voltou a ficar livre. Fale com o lead para remarcar.`,
-      severidade: "aviso",
-      chave: `pre-reserva-expirada:${a.id}`,
-    });
-  }
-}
-
 async function marcarSemResposta(config: ConfiguracaoLeads, agora: Date) {
   const limite = new Date(agora.getTime() - config.lembreteHoras * HORA_MS);
   const calados = await prisma.lead.findMany({
@@ -91,7 +78,7 @@ const aleatorio = (min: number, max: number) => min + Math.random() * Math.max(0
 /** Um envio, se tudo permitir. Devolve o que fez (para testes e logs). */
 export async function rodarDisparo(agora = new Date()): Promise<"enviado" | "lembrete" | "nada"> {
   const config = await configLeads();
-  await tratarExpiradas(agora);
+  await expirarPreReservas(agora);
   await marcarSemResposta(config, agora);
 
   if (!config.disparoAtivo || !dentroDoHorario(config, agora)) return "nada";

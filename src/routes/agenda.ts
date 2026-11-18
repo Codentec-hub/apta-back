@@ -9,7 +9,7 @@ import { autenticar } from "../middleware/autenticar.js";
 import { somenteGestao } from "../middleware/perfil.js";
 import { prisma } from "../prisma.js";
 import { emitirEvento } from "../eventos.js";
-import { ConflitoAgenda, descreverHorario, horariosLivres, preReservar } from "../leads/agenda.js";
+import { ConflitoAgenda, descreverHorario, horariosLivres, preReservar, statusSemHorario } from "../leads/agenda.js";
 import { cancelarAgendamento, confirmarAgendamento } from "../leads/agendamentos.js";
 import { RegraLead } from "../leads/leads.js";
 import { DIA_MS, diaLocal, instanteLocal, paraMinutos } from "../leads/tempo.js";
@@ -142,7 +142,8 @@ agendaRouter.get(
     const de = typeof req.query.de === "string" && DIA.test(req.query.de) ? instanteLocal(req.query.de, "00:00") : undefined;
     const ate = typeof req.query.ate === "string" && DIA.test(req.query.ate) ? instanteLocal(req.query.ate, "23:59") : undefined;
     const leadId = typeof req.query.leadId === "string" ? req.query.leadId : null;
-    const livres = await horariosLivres({ aPartirDe: de, ate, leadId });
+    // A tela da equipe (agendar à mão) não aplica a antecedência mínima do assistente.
+    const livres = await horariosLivres({ aPartirDe: de, ate, leadId, semAntecedencia: req.query.equipe === "1" });
     res.json(livres.slice(0, 300).map((h) => ({ ...descreverHorario(h), fim: h.fim.toISOString() })));
   })
 );
@@ -209,10 +210,21 @@ agendaRouter.post(
       return;
     }
     try {
-      const pre = await preReservar(parsed.data.leadId, parsed.data.inicio);
-      const final = parsed.data.confirmar
-        ? (await confirmarAgendamento(pre.id, await usuario(req), { avisarLead: parsed.data.avisarLead ?? false })).agendamento
-        : pre;
+      const pre = await preReservar(parsed.data.leadId, parsed.data.inicio, { porEquipe: true });
+      let final = pre;
+      if (parsed.data.confirmar) {
+        try {
+          final = (await confirmarAgendamento(pre.id, await usuario(req), { avisarLead: parsed.data.avisarLead ?? false })).agendamento;
+        } catch (error) {
+          // Não deixa uma pré-reserva "fantasma" quando a confirmação falha.
+          await prisma.agendamento.updateMany({
+            where: { id: pre.id, status: "PRE_RESERVADO" },
+            data: { status: "CANCELADO", canceladoEm: new Date(), motivoCancelamento: "Falha ao confirmar" },
+          });
+          await statusSemHorario(pre.leadId);
+          throw error;
+        }
+      }
       res.status(201).json(final);
     } catch (error) {
       if (!responderErro(res, error)) throw error;

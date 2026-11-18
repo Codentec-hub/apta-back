@@ -13,7 +13,8 @@ import { registrarSistema } from "../atendimento/conversas.js";
 import { CAMPOS_PERFIL, interpretarMensagemLead, perfilCompleto, perfilDe } from "../leads/campos.js";
 import { agenteDosLeads, configLeads } from "../leads/config.js";
 import { situacaoDaFila } from "../leads/disparo.js";
-import { ENCERRADOS, RegraLead, STATUS_ROTULO, encerrarLead, enfileirar, tirarDaFila } from "../leads/leads.js";
+import { cnpjDoTexto, cnpjValido, verificarDuplicidade, type AvisoDuplicidade } from "../leads/duplicidade.js";
+import { ENCERRADOS, RegraLead, STATUS_ROTULO, devolverAoAssistente, encerrarLead, enfileirar, tirarDaFila } from "../leads/leads.js";
 import { chaveTelefone, normalizarTelefone, telefoneValido } from "../whatsapp/telefone.js";
 
 export const leadsRouter = Router();
@@ -45,12 +46,29 @@ const quem = async (req: Request) =>
 
 const semAcento = (t: string) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 
-/** Lead que já tem esse telefone (ignora máscara, DDI e nono dígito). */
-async function leadDoTelefone(telefone: string, excetoId?: string) {
-  const chave = chaveTelefone(telefone);
-  if (!chave) return null;
-  const todos = await prisma.lead.findMany({ select: { id: true, nome: true, telefone: true, status: true } });
-  return todos.find((l) => l.id !== excetoId && chaveTelefone(l.telefone) === chave) ?? null;
+/**
+ * Responde 409 quando há duplicidade: telefone de outro lead sempre bloqueia;
+ * os demais avisos (cliente da casa, CNPJ em outro lead, conversa em
+ * andamento, e-mail) só passam com confirmarAvisos.
+ */
+function barrarDuplicidade(res: Response, avisos: AvisoDuplicidade[], confirmado: boolean): boolean {
+  const bloqueio = avisos.find((a) => a.bloqueia);
+  if (bloqueio) {
+    res.status(409).json({ erro: bloqueio.mensagem, avisos, leadId: bloqueio.leadId });
+    return true;
+  }
+  if (avisos.length && !confirmado) {
+    res.status(409).json({ erro: "Confira os avisos antes de salvar", avisos, precisaConfirmar: true });
+    return true;
+  }
+  return false;
+}
+
+/** CNPJ informado no campo ou, se vazio, encontrado nas respostas do formulário. */
+function cnpjDoLead(cnpj: string | null | undefined, perfil: Record<string, string> | null | undefined): string | null {
+  const direto = cnpj?.replace(/\D/g, "");
+  if (direto) return direto;
+  return cnpjDoTexto(Object.values(perfil ?? {}).join(" "));
 }
 
 leadsRouter.get(
@@ -68,7 +86,7 @@ leadsRouter.get(
           (l) =>
             semAcento(l.nome).includes(busca) ||
             (l.origem && semAcento(l.origem).includes(busca)) ||
-            (digitos.length >= 4 && l.telefone.includes(digitos))
+            (digitos.length >= 4 && (l.telefone.includes(digitos) || Boolean(l.cnpj?.includes(digitos))))
         )
       : todos;
     const contagem = Object.fromEntries(STATUS.map((s) => [s, 0])) as Record<StatusLead, number>;
@@ -105,7 +123,27 @@ leadsRouter.post(
       return;
     }
     const lido = interpretarMensagemLead(texto);
-    res.json({ ...lido, existente: lido.telefone ? await leadDoTelefone(lido.telefone) : null });
+    const avisos = await verificarDuplicidade({ telefone: lido.telefone, cnpj: lido.cnpj, email: lido.email });
+    const existente = avisos.find((a) => a.tipo === "lead_telefone");
+    res.json({ ...lido, avisos, existente: existente ? { id: existente.leadId, nome: existente.mensagem } : null });
+  })
+);
+
+// Checagem ao vivo do formulário (ao sair do campo telefone/CNPJ/e-mail).
+leadsRouter.get(
+  "/leads/verificar",
+  asyncHandler(async (req, res) => {
+    const q = (k: string) => (typeof req.query[k] === "string" && req.query[k] ? String(req.query[k]) : null);
+    const telefone = q("telefone");
+    const cnpj = q("cnpj")?.replace(/\D/g, "") || null;
+    res.json({
+      avisos: await verificarDuplicidade({
+        telefone: telefone && telefoneValido(telefone) ? telefone : null,
+        cnpj: cnpj && cnpjValido(cnpj) ? cnpj : null,
+        email: q("email"),
+        excetoId: q("excetoId"),
+      }),
+    });
   })
 );
 
@@ -115,6 +153,12 @@ const leadSchema = z.object({
   nome: z.string().trim().min(2, "Informe o nome").max(200),
   telefone: z.string().refine(telefoneValido, "Telefone inválido (informe com DDD)"),
   email: z.string().trim().email("E-mail inválido").optional().nullable().or(z.literal("")),
+  cnpj: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .refine((v) => !v || cnpjValido(v), "CNPJ inválido (confira os números)"),
   origem: z.string().trim().max(100).optional().nullable(),
   observacoes: z.string().trim().max(4000).optional().nullable(),
   qualificacao: z.string().trim().max(1000).optional().nullable(),
@@ -126,28 +170,41 @@ const primeiroErro = (e: z.ZodError) => e.issues[0]?.message ?? "Dados inválido
 leadsRouter.post(
   "/leads",
   asyncHandler(async (req, res) => {
-    const parsed = leadSchema.extend({ enviar: z.boolean().optional() }).safeParse(req.body);
+    const parsed = leadSchema.extend({ enviar: z.boolean().optional(), confirmarAvisos: z.boolean().optional() }).safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ erro: primeiroErro(parsed.error) });
       return;
     }
-    const { enviar, ...dados } = parsed.data;
+    const { enviar, confirmarAvisos, ...dados } = parsed.data;
     const telefone = normalizarTelefone(dados.telefone);
-    const existente = await leadDoTelefone(telefone);
-    if (existente) {
-      res.status(409).json({ erro: `Já existe um lead com esse telefone: ${existente.nome} (${STATUS_ROTULO[existente.status]})`, leadId: existente.id });
+    const perfil = perfilDe(dados.perfil);
+    const cnpj = cnpjDoLead(dados.cnpj, perfil);
+    const email = dados.email ? dados.email.toLowerCase() : null;
+    const avisos = await verificarDuplicidade({ telefone, cnpj, email });
+    if (barrarDuplicidade(res, avisos, confirmarAvisos === true)) return;
+
+    // Duas pessoas cadastrando o mesmo número ao mesmo tempo (um com o 9 e
+    // outro sem): a trava por número deixa só a primeira passar.
+    const chave = chaveTelefone(telefone)!;
+    const lead = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`lead:${chave}`}))`;
+      const mesmos = await tx.lead.findMany({ where: { telefone: { endsWith: chave.slice(-8) } }, select: { telefone: true } });
+      if (mesmos.some((l) => chaveTelefone(l.telefone) === chave)) return null;
+      return tx.lead.create({
+        data: { ...dados, email, cnpj, telefone, perfil, cadastradoPorId: req.usuario!.usuarioId },
+      });
+    });
+    if (!lead) {
+      res.status(409).json({ erro: "Esse telefone acabou de ser cadastrado por outra pessoa" });
       return;
     }
-    const perfil = perfilDe(dados.perfil);
-    const lead = await prisma.lead.create({
-      data: {
-        ...dados,
-        email: dados.email || null,
-        telefone,
-        perfil,
-        cadastradoPorId: req.usuario!.usuarioId,
-      },
-    });
+    if (avisos.length) {
+      const nota = `Cadastrado com avisos confirmados: ${avisos.map((a) => a.mensagem).join(" ")}`;
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { observacoes: [lead.observacoes, nota].filter(Boolean).join("\n\n").slice(0, 4000) },
+      });
+    }
     const config = await configLeads();
     await agenteDosLeads(); // garante o agente para a primeira conversa
     if (enviar || config.disparoAutomatico) await enfileirar(lead.id);
@@ -177,7 +234,7 @@ leadsRouter.get(
 leadsRouter.put(
   "/leads/:id",
   asyncHandler(async (req, res) => {
-    const parsed = leadSchema.partial().safeParse(req.body);
+    const parsed = leadSchema.partial().extend({ confirmarAvisos: z.boolean().optional() }).safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ erro: primeiroErro(parsed.error) });
       return;
@@ -187,22 +244,30 @@ leadsRouter.put(
       res.status(404).json({ erro: "Lead não encontrado" });
       return;
     }
-    const { telefone, perfil, email, ...resto } = parsed.data;
+    const { telefone, perfil, email, cnpj, confirmarAvisos, ...resto } = parsed.data;
     const data: Prisma.LeadUpdateInput = { ...resto };
-    if (email !== undefined) data.email = email || null;
+    if (email !== undefined) data.email = email ? email.toLowerCase() : null;
     if (perfil !== undefined) data.perfil = perfilDe(perfil);
-    if (telefone !== undefined && normalizarTelefone(telefone) !== lead.telefone) {
+    if (cnpj !== undefined) data.cnpj = cnpj ? cnpj.replace(/\D/g, "") : null;
+    else if (perfil !== undefined && !lead.cnpj) data.cnpj = cnpjDoLead(null, perfilDe(perfil));
+    const trocouTelefone = telefone !== undefined && normalizarTelefone(telefone) !== lead.telefone;
+    if (trocouTelefone) {
       if (lead.conversaId) {
         res.status(409).json({ erro: "O assistente já falou com este número; não dá para trocar o telefone" });
         return;
       }
-      const outro = await leadDoTelefone(telefone, lead.id);
-      if (outro) {
-        res.status(409).json({ erro: `Já existe um lead com esse telefone: ${outro.nome}` });
-        return;
-      }
       data.telefone = normalizarTelefone(telefone);
     }
+    // Só confere o que mudou (o lead não é duplicado de si mesmo).
+    const novoCnpj = typeof data.cnpj === "string" && data.cnpj !== lead.cnpj ? data.cnpj : null;
+    const novoEmail = typeof data.email === "string" && data.email !== lead.email?.toLowerCase() ? data.email : null;
+    const avisos = await verificarDuplicidade({
+      telefone: trocouTelefone ? (data.telefone as string) : null,
+      cnpj: novoCnpj,
+      email: novoEmail,
+      excetoId: lead.id,
+    });
+    if (barrarDuplicidade(res, avisos, confirmarAvisos === true)) return;
     await prisma.lead.update({ where: { id: lead.id }, data });
     emitirEvento({ tipo: "leads" });
     res.json(await prisma.lead.findUnique({ where: { id: lead.id }, include: leadInclude }));
@@ -260,23 +325,12 @@ leadsRouter.post(
       res.status(404).json({ erro: "Lead não encontrado" });
       return;
     }
-    if (!lead.conversaId) {
-      await prisma.lead.update({ where: { id: lead.id }, data: { status: "NOVO", motivoEncerramento: null } });
-    } else {
-      const agente = await agenteDosLeads();
-      const ativo = await prisma.agendamento.findFirst({ where: { leadId: lead.id, status: { in: ["PRE_RESERVADO", "CONFIRMADO"] } } });
-      const status: StatusLead = ativo
-        ? ativo.status === "CONFIRMADO"
-          ? "AGENDADO"
-          : "AGUARDANDO_CONFIRMACAO"
-        : perfilCompleto(perfilDe(lead.perfil))
-          ? "DADOS_COLETADOS"
-          : "EM_CONVERSA";
-      await prisma.lead.update({ where: { id: lead.id }, data: { status, motivoEncerramento: null } });
-      await prisma.conversa.update({ where: { id: lead.conversaId }, data: { modo: "AGENTE", agenteId: agente.id } });
-      await registrarSistema(lead.conversaId, `Conversa devolvida ao ${agente.nome} por ${await quem(req)}.`);
+    try {
+      await devolverAoAssistente(lead, await quem(req));
+    } catch (error) {
+      if (!responderRegra(res, error)) throw error;
+      return;
     }
-    emitirEvento({ tipo: "leads" });
     res.status(204).send();
   })
 );

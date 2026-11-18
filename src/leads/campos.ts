@@ -2,6 +2,7 @@
 // do anúncio (Meta Ads, colado no cadastro) e para o que o assistente coleta
 // na conversa (ferramenta salvar_perfil).
 import { normalizarTelefone } from "../whatsapp/telefone.js";
+import { cnpjDoTexto } from "./duplicidade.js";
 
 export interface CampoPerfil {
   chave: string;
@@ -116,6 +117,7 @@ export interface LeadInterpretado {
   nome: string | null;
   telefone: string | null;
   email: string | null;
+  cnpj: string | null;
   origem: string | null;
   qualificacao: string | null;
   perfil: PerfilLead;
@@ -138,7 +140,7 @@ const ehRotulo = (l: string) => /^[^:]{2,80}:/.test(l) || /^[^:]{2,80}\?$/.test(
  * campos. Aceita "Rótulo: valor" na mesma linha ou o valor na linha seguinte.
  */
 export function interpretarMensagemLead(texto: string): LeadInterpretado {
-  const saida: LeadInterpretado = { nome: null, telefone: null, email: null, origem: null, qualificacao: null, perfil: {} };
+  const saida: LeadInterpretado = { nome: null, telefone: null, email: null, cnpj: null, origem: null, qualificacao: null, perfil: {} };
   const linhas = texto.split(/\r?\n/).map(limpar);
 
   const titulo = linhas.find((l) => /lead/i.test(l) && /\(([^)]+)\)/.test(l));
@@ -174,8 +176,14 @@ export function interpretarMensagemLead(texto: string): LeadInterpretado {
     else if (/telefone|celular|whats/.test(r)) saida.telefone = normalizarTelefone(valor);
     else if (/e-?mail/.test(r)) saida.email = valor.toLowerCase();
     else if (/origem|fonte|campanha/.test(r)) saida.origem = valor;
-    else saida.perfil[chaveDoRotulo(rotulo)] = valor;
+    else if (/cnpj/.test(r) && cnpjDoTexto(valor)) {
+      // "CNPJ: 12.345.678/0001-90" — guarda o número e já responde a pergunta.
+      saida.cnpj = cnpjDoTexto(valor);
+      saida.perfil.possuiCnpj ??= "Sim";
+    } else saida.perfil[chaveDoRotulo(rotulo)] = valor;
   }
+  // CNPJ escrito no meio de outra resposta ("Situação: tenho a empresa 12.345...").
+  saida.cnpj ??= cnpjDoTexto(Object.values(saida.perfil).join(" "));
   return saida;
 }
 

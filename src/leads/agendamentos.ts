@@ -7,7 +7,7 @@ import { prisma } from "../prisma.js";
 import { primeiroNome } from "./campos.js";
 import { CONFIRMACAO_PADRAO, configLeads, preencher } from "./config.js";
 import { statusSemHorario } from "./agenda.js";
-import { RegraLead } from "./leads.js";
+import { ENCERRADOS, RegraLead } from "./leads.js";
 import { dataPorExtenso } from "./tempo.js";
 
 export async function confirmarAgendamento(
@@ -18,13 +18,18 @@ export async function confirmarAgendamento(
   const atual = await prisma.agendamento.findUnique({ where: { id }, include: { lead: true } });
   if (!atual) throw new RegraLead("Agendamento não encontrado");
   if (atual.status !== "PRE_RESERVADO") throw new RegraLead("Só dá para confirmar uma pré-reserva");
+  if (ENCERRADOS.includes(atual.lead.status)) throw new RegraLead("Este lead está encerrado; reabra antes de confirmar");
   const agora = new Date();
   if (atual.inicio <= agora) throw new RegraLead("Esse horário já passou; cancele e marque outro");
 
-  const agendamento = await prisma.agendamento.update({
-    where: { id },
+  // Duas pessoas confirmando ao mesmo tempo: só a primeira passa (e só ela
+  // manda a mensagem ao lead).
+  const { count } = await prisma.agendamento.updateMany({
+    where: { id, status: "PRE_RESERVADO" },
     data: { status: "CONFIRMADO", confirmadoEm: agora, confirmadoPorId: usuario.id, expiraEm: null, observacoes: opcoes.observacoes ?? atual.observacoes },
   });
+  if (!count) throw new RegraLead("Essa pré-reserva acabou de ser confirmada ou cancelada por outra pessoa");
+  const agendamento = (await prisma.agendamento.findUnique({ where: { id } }))!;
   await prisma.lead.update({ where: { id: atual.leadId }, data: { status: "AGENDADO" } });
 
   let mensagemEnviada = false;
@@ -58,10 +63,12 @@ export async function cancelarAgendamento(
   const atual = await prisma.agendamento.findUnique({ where: { id }, include: { lead: true } });
   if (!atual) throw new RegraLead("Agendamento não encontrado");
   if (atual.status !== "PRE_RESERVADO" && atual.status !== "CONFIRMADO") throw new RegraLead("Este agendamento já não está ativo");
-  const agendamento = await prisma.agendamento.update({
-    where: { id },
+  const { count } = await prisma.agendamento.updateMany({
+    where: { id, status: { in: ["PRE_RESERVADO", "CONFIRMADO"] } },
     data: { status: "CANCELADO", canceladoEm: new Date(), motivoCancelamento: opcoes.motivo },
   });
+  if (!count) throw new RegraLead("Esse agendamento acabou de ser cancelado ou expirou");
+  const agendamento = (await prisma.agendamento.findUnique({ where: { id } }))!;
   await statusSemHorario(atual.leadId);
   const conversaId = atual.lead.conversaId;
   if (conversaId) {

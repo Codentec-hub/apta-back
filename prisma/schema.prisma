@@ -1084,6 +1084,8 @@ model Lead {
   nome               String
   telefone           String     @unique // só dígitos com DDI, como Conversa.telefone
   email              String?
+  // Só dígitos. Serve para achar duplicidade (outro lead ou cliente da casa).
+  cnpj               String?
   origem             String? // ex.: "Meta Ads", "indicação"
   observacoes        String? // informações passadas por quem cadastrou
   qualificacao       String? // ex.: "Lead altamente qualificado — ..."
@@ -1107,6 +1109,7 @@ model Lead {
 
   @@index([status])
   @@index([naFilaEm])
+  @@index([cnpj])
   @@map("leads")
 }
 

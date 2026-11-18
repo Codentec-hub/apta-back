@@ -8,9 +8,10 @@ import { emitirEvento } from "../eventos.js";
 import { garantirFeriados } from "../obrigacoes/feriados.js";
 import { ehDiaUtil } from "../obrigacoes/prazos.js";
 import { prisma } from "../prisma.js";
-import { perfilCompleto, perfilDe } from "./campos.js";
+import { registrarSistema } from "../atendimento/conversas.js";
 import { configLeads } from "./config.js";
-import { DIA_MS, HORA_MS, MIN_MS, diaLocal, instanteLocal, minutosLocais, paraMinutos, rotuloHorario, somarDiasLocal } from "./tempo.js";
+import { ENCERRADOS, RegraLead, avisarEquipe, statusConversando } from "./leads.js";
+import { DIA_MS, HORA_MS, MIN_MS, dataPorExtenso, diaLocal, instanteLocal, minutosLocais, paraMinutos, rotuloHorario, somarDiasLocal } from "./tempo.js";
 
 export const ATIVOS = ["PRE_RESERVADO", "CONFIRMADO"] as const;
 
@@ -43,6 +44,8 @@ interface OpcoesLivres {
   /** Ignora o agendamento deste lead (para remarcar). */
   leadId?: string | null;
   agora?: Date;
+  /** A equipe marcando à mão (combinou por telefone): vale até daqui a pouco. */
+  semAntecedencia?: boolean;
 }
 
 /** Todos os horários livres da janela, em ordem. */
@@ -50,7 +53,8 @@ export async function horariosLivres(opcoes: OpcoesLivres = {}): Promise<Horario
   await garantirFeriados();
   const config = await configLeads();
   const agora = opcoes.agora ?? new Date();
-  const minimo = new Date(Math.max(agora.getTime() + config.antecedenciaMinHoras * HORA_MS, opcoes.aPartirDe?.getTime() ?? 0));
+  const antecedencia = opcoes.semAntecedencia ? 0 : config.antecedenciaMinHoras * HORA_MS;
+  const minimo = new Date(Math.max(agora.getTime() + antecedencia, opcoes.aPartirDe?.getTime() ?? 0));
   const limite = opcoes.ate ?? new Date(agora.getTime() + config.diasAgendaAberta * DIA_MS);
   if (minimo >= limite) return [];
 
@@ -117,11 +121,25 @@ export const descreverHorario = (h: Horario) => ({ inicio: h.inicio.toISOString(
  * pré-reserva anterior do mesmo lead é cancelada (remarcação). Dois pedidos
  * ao mesmo tempo: o índice único parcial deixa só um passar.
  */
-export async function preReservar(leadId: string, inicio: Date, agora = new Date()): Promise<Agendamento> {
+export async function preReservar(
+  leadId: string,
+  inicio: Date,
+  opcoes: { agora?: Date; porEquipe?: boolean } = {}
+): Promise<Agendamento> {
+  const agora = opcoes.agora ?? new Date();
   const config = await configLeads();
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { status: true } });
+  if (!lead) throw new RegraLead("Lead não encontrado");
+  if (ENCERRADOS.includes(lead.status)) throw new RegraLead("Este lead está encerrado; reabra antes de agendar");
   // Pré-reservas vencidas liberam o horário já (a rotina só passa depois).
   await expirarPreReservas(agora);
-  const livres = await horariosLivres({ aPartirDe: new Date(inicio.getTime() - MIN_MS), ate: new Date(inicio.getTime() + DIA_MS), leadId, agora });
+  const livres = await horariosLivres({
+    aPartirDe: new Date(inicio.getTime() - MIN_MS),
+    ate: new Date(inicio.getTime() + DIA_MS),
+    leadId,
+    agora,
+    semAntecedencia: opcoes.porEquipe,
+  });
   const horario = livres.find((h) => h.inicio.getTime() === inicio.getTime());
   if (!horario) throw new ConflitoAgenda("Esse horário não está mais disponível.");
 
@@ -136,7 +154,7 @@ export async function preReservar(leadId: string, inicio: Date, agora = new Date
         if (confirmado) throw new ConflitoAgenda("Este lead já tem um horário confirmado; para remarcar, fale com a equipe.");
         await tx.agendamento.updateMany({
           where: { leadId, status: "PRE_RESERVADO" },
-          data: { status: "CANCELADO", canceladoEm: agora, motivoCancelamento: "Remarcado pelo lead" },
+          data: { status: "CANCELADO", canceladoEm: agora, motivoCancelamento: opcoes.porEquipe ? "Remarcado pela equipe" : "Remarcado pelo lead" },
         });
         const novo = await tx.agendamento.create({
           data: { leadId, inicio: horario.inicio, fim: horario.fim, expiraEm: new Date(agora.getTime() + config.prazoPreReservaHoras * HORA_MS) },
@@ -163,22 +181,37 @@ export async function statusSemHorario(leadId: string): Promise<void> {
   if (ativo) return;
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead || !["AGUARDANDO_CONFIRMACAO", "AGENDADO"].includes(lead.status)) return;
-  await prisma.lead.update({
-    where: { id: leadId },
-    data: { status: perfilCompleto(perfilDe(lead.perfil)) ? "DADOS_COLETADOS" : "EM_CONVERSA" },
-  });
+  // Agendado à mão sem nunca ter falado com o assistente: volta para "Novo".
+  await prisma.lead.update({ where: { id: leadId }, data: { status: lead.conversaId ? statusConversando(lead) : "NOVO" } });
 }
 
-/** Expira pré-reservas vencidas. Devolve as que expiraram (com o lead). */
+/**
+ * Expira pré-reservas vencidas, registra na conversa e avisa a equipe. Roda
+ * pela rotina e antes de cada reserva; cada uma é tratada uma vez só (quem
+ * muda o status primeiro é quem avisa).
+ */
 export async function expirarPreReservas(agora = new Date()) {
   const vencidas = await prisma.agendamento.findMany({
     where: { status: "PRE_RESERVADO", expiraEm: { lte: agora } },
     include: { lead: true },
   });
+  const tratadas: typeof vencidas = [];
   for (const a of vencidas) {
-    await prisma.agendamento.update({ where: { id: a.id }, data: { status: "EXPIRADO" } });
+    const { count } = await prisma.agendamento.updateMany({ where: { id: a.id, status: "PRE_RESERVADO" }, data: { status: "EXPIRADO" } });
+    if (!count) continue;
+    tratadas.push(a);
     await statusSemHorario(a.leadId);
+    if (a.lead.conversaId) {
+      await registrarSistema(a.lead.conversaId, `Pré-reserva de ${dataPorExtenso(a.inicio)} expirou sem confirmação; o horário foi liberado.`);
+    }
+    await avisarEquipe(a.lead, {
+      tipo: "lead_pre_reserva_expirada",
+      titulo: `Pré-reserva expirada: ${a.lead.nome}`,
+      mensagem: `O horário de ${dataPorExtenso(a.inicio)} não foi confirmado no prazo e voltou a ficar livre. Fale com o lead para remarcar.`,
+      severidade: "aviso",
+      chave: `pre-reserva-expirada:${a.id}`,
+    });
   }
-  if (vencidas.length) emitirEvento({ tipo: "leads" });
-  return vencidas;
+  if (tratadas.length) emitirEvento({ tipo: "leads" });
+  return tratadas;
 }

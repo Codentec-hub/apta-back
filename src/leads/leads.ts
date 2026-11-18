@@ -1,13 +1,13 @@
 // Regras do lead: entrar na fila, primeira mensagem, lembrete, resposta do
 // lead (inclusive quando ele chama primeiro), pedido para sair e encerramentos.
 import type { Lead, StatusLead } from "@prisma/client";
-import { atendimentoAberto, conversaDoTelefone, enviarMensagem, registrarSistema } from "../atendimento/conversas.js";
+import { atendimentoAberto, conversaDoTelefone, conversaPelaChave, enviarMensagem, registrarSistema } from "../atendimento/conversas.js";
 import { emitirEvento } from "../eventos.js";
 import { idsDaGestao, notificar } from "../notificacoes/notificar.js";
 import type { NovaNotificacao } from "../notificacoes/notificar.js";
 import { prisma } from "../prisma.js";
 import { chaveTelefone } from "../whatsapp/telefone.js";
-import { primeiroNome } from "./campos.js";
+import { perfilCompleto, perfilDe, primeiroNome } from "./campos.js";
 import { LEMBRETE_PADRAO, agenteDosLeads, configLeads, mensagensIniciais, preencher, sortear } from "./config.js";
 
 export const STATUS_ROTULO: Record<StatusLead, string> = {
@@ -27,6 +27,10 @@ export const EM_ANDAMENTO: StatusLead[] = ["EM_CONVERSA", "DADOS_COLETADOS", "AG
 export const ENCERRADOS: StatusLead[] = ["FORA_DO_PERFIL", "DESCARTADO"];
 
 export class RegraLead extends Error {}
+
+/** Status de quem está conversando com o assistente, conforme o perfil. */
+export const statusConversando = (lead: Pick<Lead, "perfil">): StatusLead =>
+  perfilCompleto(perfilDe(lead.perfil)) ? "DADOS_COLETADOS" : "EM_CONVERSA";
 
 const hrefLead = (id: string) => `/dashboard/leads?lead=${id}`;
 
@@ -70,8 +74,40 @@ async function conversaDoLead(lead: Lead) {
   return { conversa, agente };
 }
 
+/**
+ * Atendimento humano em andamento no mesmo número (alguém da equipe já está
+ * conversando): o assistente não entra no meio.
+ */
+async function atendimentoHumanoEmAndamento(telefone: string) {
+  const conversa = await conversaPelaChave(telefone);
+  if (!conversa || conversa.modo !== "HUMANO") return null;
+  const aberto = await prisma.atendimento.findFirst({
+    where: { conversaId: conversa.id, status: "EM_ATENDIMENTO" },
+    include: { responsavel: { select: { nome: true } } },
+  });
+  return aberto ? { conversaId: conversa.id, responsavel: aberto.responsavel?.nome ?? null } : null;
+}
+
 /** Primeira mensagem (chamada pela fila de disparo). */
-export async function enviarPrimeiraMensagem(lead: Lead): Promise<boolean> {
+export async function enviarPrimeiraMensagem(leadDaFila: Lead): Promise<boolean> {
+  // Relê: entre a fila escolher e o envio alguém pode ter tirado da fila,
+  // descartado ou agendado o lead.
+  const lead = await prisma.lead.findUnique({ where: { id: leadDaFila.id } });
+  if (!lead || lead.status !== "NA_FILA") return false;
+  const humano = await atendimentoHumanoEmAndamento(lead.telefone);
+  if (humano) {
+    await prisma.lead.update({ where: { id: lead.id }, data: { status: "NOVO", naFilaEm: null } });
+    await avisarEquipe(lead, {
+      tipo: "lead_precisa_humano",
+      titulo: `${lead.nome} não foi chamado pelo assistente`,
+      mensagem: `Esse número já está em atendimento${humano.responsavel ? ` com ${humano.responsavel}` : ""}. O lead voltou para "Novo"; envie de novo quando o atendimento terminar.`,
+      severidade: "aviso",
+      href: `/dashboard/atendimento?conversa=${humano.conversaId}`,
+      chave: `lead-em-atendimento:${lead.id}:${Date.now()}`,
+    });
+    emitirEvento({ tipo: "leads" });
+    return false;
+  }
   const config = await configLeads();
   const { conversa, agente } = await conversaDoLead(lead);
   await registrarSistema(conversa.id, `Lead enviado ao ${agente.nome}: primeira mensagem automática.`);
@@ -94,7 +130,7 @@ export async function enviarPrimeiraMensagem(lead: Lead): Promise<boolean> {
     emitirEvento({ tipo: "leads" });
     return false;
   }
-  await prisma.lead.update({ where: { id: lead.id }, data: { status: "EM_CONVERSA", primeiraMensagemEm: new Date() } });
+  await prisma.lead.update({ where: { id: lead.id }, data: { status: statusConversando(lead), primeiraMensagemEm: new Date() } });
   emitirEvento({ tipo: "leads" });
   return true;
 }
@@ -102,6 +138,9 @@ export async function enviarPrimeiraMensagem(lead: Lead): Promise<boolean> {
 /** Um lembrete só, se o lead não respondeu à primeira mensagem. */
 export async function enviarLembrete(lead: Lead): Promise<void> {
   if (!lead.conversaId) return;
+  // A equipe assumiu a conversa: lembrete automático não entra no meio.
+  const conversa = await prisma.conversa.findUnique({ where: { id: lead.conversaId }, select: { modo: true } });
+  if (conversa?.modo !== "AGENTE") return;
   const config = await configLeads();
   const texto = preencher(config.mensagemLembrete?.trim() || LEMBRETE_PADRAO, {
     nome: lead.nome,
@@ -116,10 +155,25 @@ export async function enviarLembrete(lead: Lead): Promise<void> {
 /** Encerra o lead e devolve a conversa para a equipe. */
 export async function encerrarLead(lead: Lead, status: Extract<StatusLead, "FORA_DO_PERFIL" | "DESCARTADO" | "SEM_RESPOSTA">, motivo: string, quem?: string) {
   await prisma.lead.update({ where: { id: lead.id }, data: { status, motivoEncerramento: motivo, naFilaEm: null } });
-  await prisma.agendamento.updateMany({
-    where: { leadId: lead.id, status: "PRE_RESERVADO" },
-    data: { status: "CANCELADO", canceladoEm: new Date(), motivoCancelamento: motivo },
+  // Lead encerrado não fica ocupando a agenda (nem pré-reserva nem horário
+  // confirmado que ainda não aconteceu).
+  const agora = new Date();
+  const liberados = await prisma.agendamento.findMany({
+    where: { leadId: lead.id, OR: [{ status: "PRE_RESERVADO" }, { status: "CONFIRMADO", inicio: { gt: agora } }] },
   });
+  await prisma.agendamento.updateMany({
+    where: { id: { in: liberados.map((a) => a.id) } },
+    data: { status: "CANCELADO", canceladoEm: agora, motivoCancelamento: motivo },
+  });
+  if (liberados.some((a) => a.status === "CONFIRMADO")) {
+    await avisarEquipe(lead, {
+      tipo: "lead_precisa_humano",
+      titulo: `Agendamento cancelado: ${lead.nome}`,
+      mensagem: `O lead foi marcado como "${STATUS_ROTULO[status]}" e o horário confirmado foi liberado na agenda.`,
+      severidade: "aviso",
+      chave: `lead-encerrado-agendado:${lead.id}:${agora.getTime()}`,
+    });
+  }
   if (lead.conversaId) {
     await prisma.conversa.update({ where: { id: lead.conversaId }, data: { modo: "HUMANO" } });
     await registrarSistema(lead.conversaId, `Lead marcado como "${STATUS_ROTULO[status]}"${quem ? ` por ${quem}` : ""}: ${motivo}`);
@@ -163,7 +217,7 @@ export async function aoReceberDoLead(conversaId: string, telefone: string | nul
     if (achado) {
       const { conversa, agente } = await conversaDoLead(achado);
       await registrarSistema(conversa.id, `O lead ${achado.nome} chamou primeiro; conversa passada ao ${agente.nome}.`);
-      lead = await prisma.lead.update({ where: { id: achado.id }, data: { status: "EM_CONVERSA", naFilaEm: null } });
+      lead = await prisma.lead.update({ where: { id: achado.id }, data: { status: statusConversando(achado), naFilaEm: null } });
     }
   }
   if (!lead) return false;
@@ -176,8 +230,42 @@ export async function aoReceberDoLead(conversaId: string, telefone: string | nul
   }
   await prisma.lead.update({
     where: { id: lead.id },
-    data: { ultimaRespostaEm: agora, ...(lead.status === "SEM_RESPOSTA" ? { status: "EM_CONVERSA" } : {}) },
+    data: { ultimaRespostaEm: agora, ...(lead.status === "SEM_RESPOSTA" ? { status: statusConversando(lead) } : {}) },
   });
   emitirEvento({ tipo: "leads" });
   return false;
+}
+
+/**
+ * Reabre um lead encerrado ou devolve ao assistente a conversa que a equipe
+ * assumiu. Lead que nunca foi chamado volta para "Novo".
+ */
+export async function devolverAoAssistente(lead: Lead, quem: string): Promise<void> {
+  const comAssistente = lead.conversaId
+    ? (await prisma.conversa.findUnique({ where: { id: lead.conversaId }, select: { modo: true } }))?.modo === "AGENTE"
+    : false;
+  const encerrado = ENCERRADOS.includes(lead.status);
+  if (!encerrado && (lead.status === "NOVO" || lead.status === "NA_FILA")) {
+    throw new RegraLead("Este lead ainda não foi chamado; use \"Enviar ao assistente\".");
+  }
+  if (!encerrado && comAssistente) throw new RegraLead("A conversa já está com o assistente.");
+
+  if (!lead.conversaId) {
+    // Encerrado antes de qualquer contato (ou agendado à mão e descartado).
+    await prisma.lead.update({ where: { id: lead.id }, data: { status: "NOVO", motivoEncerramento: null, naFilaEm: null } });
+    emitirEvento({ tipo: "leads" });
+    return;
+  }
+  const ativo = await prisma.agendamento.findFirst({ where: { leadId: lead.id, status: { in: ["PRE_RESERVADO", "CONFIRMADO"] } } });
+  const status: StatusLead = ativo
+    ? ativo.status === "CONFIRMADO"
+      ? "AGENDADO"
+      : "AGUARDANDO_CONFIRMACAO"
+    : lead.status === "SEM_RESPOSTA" || (encerrado && !lead.ultimaRespostaEm && lead.lembreteEnviadoEm)
+      ? "SEM_RESPOSTA"
+      : statusConversando(lead);
+  const { conversa, agente } = await conversaDoLead(lead);
+  await prisma.lead.update({ where: { id: lead.id }, data: { status, motivoEncerramento: null } });
+  await registrarSistema(conversa.id, `Conversa devolvida ao ${agente.nome} por ${quem}.`);
+  emitirEvento({ tipo: "leads" });
 }
