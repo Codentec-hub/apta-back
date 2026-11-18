@@ -7,6 +7,7 @@ import { provedorWhatsApp } from "../whatsapp/provedor.js";
 import { chaveTelefone, normalizarTelefone } from "../whatsapp/telefone.js";
 import { aoReceberDoLead } from "../leads/leads.js";
 import { acionarAgente } from "./agente.js";
+import { atualizarFotosVencidas } from "./foto-conversa.js";
 import { estaAberto, responsavelSugerido } from "./sessao.js";
 
 const RESUMO_MAX = 140;
@@ -131,6 +132,7 @@ export async function receberMensagem(entrada: MensagemRecebida) {
     return null; // provedores reenviam o mesmo evento
   }
   const conversa = await conversaDoTelefone(entrada.telefone, entrada.nomeExibicao);
+  atualizarFotosVencidas([conversa]);
   if (!(await atendimentoAberto(conversa.id))) {
     await abrirAtendimentoDeEntrada(conversa);
   }

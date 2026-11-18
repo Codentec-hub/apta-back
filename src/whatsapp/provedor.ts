@@ -24,6 +24,9 @@ export interface ProvedorWhatsApp {
   // cliente; fora disso, só modelos aprovados pela Meta.
   exigeJanela24h: boolean;
   enviarTexto(telefone: string, texto: string): Promise<ResultadoEnvio>;
+  // URL (temporária) da foto de perfil do contato; null se não tiver ou se a
+  // privacidade dele esconder. Ausente = provedor não oferece.
+  buscarFotoPerfil?(telefone: string): Promise<string | null>;
 }
 
 const simulador: ProvedorWhatsApp = {
@@ -67,6 +70,20 @@ const evolution: ProvedorWhatsApp = {
     }
     const dados = (await resposta.json()) as { key?: { id?: string } };
     return { idExterno: dados.key?.id ?? null };
+  },
+  async buscarFotoPerfil(telefone) {
+    const { url, apiKey, instance } = await configEvolution();
+    const resposta = await fetch(`${url}/chat/fetchProfilePictureUrl/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: apiKey },
+      body: JSON.stringify({ number: telefone }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resposta.ok) {
+      throw new Error(`Evolution API respondeu ${resposta.status} ao buscar a foto`);
+    }
+    const dados = (await resposta.json()) as { profilePictureUrl?: string | null };
+    return typeof dados.profilePictureUrl === "string" && dados.profilePictureUrl ? dados.profilePictureUrl : null;
   },
 };
 

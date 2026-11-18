@@ -17,6 +17,7 @@ import {
   registrarSistema,
 } from "../atendimento/conversas.js";
 import { dadosFinalizar, dadosIniciar, responsavelSugerido, TransicaoInvalida } from "../atendimento/sessao.js";
+import { atualizarFotosVencidas } from "../atendimento/foto-conversa.js";
 import { emitirEvento } from "../eventos.js";
 import { provedorWhatsApp } from "../whatsapp/provedor.js";
 import { chaveTelefone, telefoneValido } from "../whatsapp/telefone.js";
@@ -117,8 +118,21 @@ conversasRouter.get("/conversas", asyncHandler(async (req, res) => {
     });
   }
   if (aba === "finalizadas") lista = lista.slice(0, LIMITE_FINALIZADAS);
+  atualizarFotosVencidas(lista);
 
   res.json({ conversas: lista.map(formatar), contagem });
+}));
+
+// Foto de perfil do WhatsApp guardada (versionada por ?v=fotoEm no front).
+conversasRouter.get("/conversas/:id/foto", asyncHandler(async (req, res) => {
+  const foto = await prisma.fotoConversa.findUnique({ where: { conversaId: req.params.id } });
+  if (!foto) {
+    res.status(404).end();
+    return;
+  }
+  res.setHeader("Content-Type", foto.mime);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.send(Buffer.from(foto.dados));
 }));
 
 conversasRouter.get("/conversas/:id", asyncHandler(async (req, res) => {

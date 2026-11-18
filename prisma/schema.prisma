@@ -753,6 +753,10 @@ model Conversa {
   // Última mensagem do cliente: a API oficial só permite texto livre até
   // 24h depois dela (fora disso, só modelos aprovados).
   ultimaEntradaEm     DateTime?    @map("ultima_entrada_em")
+  // Foto de perfil do WhatsApp guardada em fotos_conversa (versão = fotoEm).
+  // fotoBuscadaEm = última consulta ao provedor (com ou sem foto), 1x por dia.
+  fotoEm              DateTime?    @map("foto_em")
+  fotoBuscadaEm       DateTime?    @map("foto_buscada_em")
   createdAt           DateTime     @default(now()) @map("created_at")
 
   clienteId String?         @map("cliente_id")
@@ -765,6 +769,7 @@ model Conversa {
   mensagens    Mensagem[]
   atendimentos Atendimento[]
   lead         Lead?
+  foto         FotoConversa?
 
   @@index([ultimaMensagemEm])
   @@map("conversas")
@@ -1226,4 +1231,14 @@ model TokenAcesso {
 
   @@index([usuarioId])
   @@map("tokens_acesso")
+}
+
+model FotoConversa {
+  conversaId String   @id @map("conversa_id")
+  conversa   Conversa @relation(fields: [conversaId], references: [id], onDelete: Cascade)
+  dados      Bytes
+  mime       String
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("fotos_conversa")
 }
