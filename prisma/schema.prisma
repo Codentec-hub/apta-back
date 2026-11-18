@@ -55,6 +55,11 @@ model Usuario {
   // Quando a foto de perfil mudou (vai na URL da foto para o navegador não usar a antiga).
   fotoEm    DateTime?     @map("foto_em")
   foto      FotoUsuario?
+  // Convite enviado e a pessoa ainda não criou a senha.
+  convitePendente  Boolean @default(false) @map("convite_pendente")
+  // Senha provisória (definida pelo admin): tem que trocar no próximo acesso.
+  trocaObrigatoria Boolean @default(false) @map("troca_obrigatoria")
+  tokensAcesso     TokenAcesso[]
 
   setorId String? @map("setor_id")
   setor   Setor?  @relation(fields: [setorId], references: [id])
@@ -1199,4 +1204,26 @@ model FotoUsuario {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("fotos_usuario")
+}
+
+enum TipoTokenAcesso {
+  CONVITE
+  REDEFINICAO
+}
+
+// Link de uso único para criar (convite) ou redefinir a senha. Só o hash do
+// token fica no banco.
+model TokenAcesso {
+  id        String          @id @default(uuid())
+  tokenHash String          @unique @map("token_hash")
+  tipo      TipoTokenAcesso
+  expiraEm  DateTime        @map("expira_em")
+  usadoEm   DateTime?       @map("usado_em")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  usuarioId String  @map("usuario_id")
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId])
+  @@map("tokens_acesso")
 }

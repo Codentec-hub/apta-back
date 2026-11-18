@@ -152,6 +152,13 @@ export const TIPOS_NOTIFICACAO = {
     categoria: "conta",
     padrao: { app: true, email: false },
   },
+  senha_esquecida: {
+    rotulo: "Pedido de nova senha",
+    descricao: "Alguém da equipe clicou em \"Esqueci minha senha\" e o e-mail do sistema não está ligado: gere um link em Usuários.",
+    categoria: "conta",
+    gestao: true,
+    padrao: { app: true, email: false },
+  },
 } satisfies Record<string, TipoNotificacao>;
 
 export type TipoId = keyof typeof TIPOS_NOTIFICACAO;

@@ -6,6 +6,9 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { autenticar } from "../middleware/autenticar.js";
 import { registrarAuditoria } from "../auditoria/registrar.js";
 import { prisma, prismaBase } from "../prisma.js";
+import { enviarLinkAcesso, gerarTokenAcesso, tokenValido } from "../acesso/tokens.js";
+import { emailConfigurado } from "../envio/email.js";
+import { notificar } from "../notificacoes/notificar.js";
 
 export const authRouter = Router();
 
@@ -87,7 +90,7 @@ authRouter.post("/auth/login", asyncHandler(async (req, res) => {
 authRouter.get("/auth/me", autenticar, asyncHandler(async (req, res) => {
   const usuario = await prisma.usuario.findUnique({
     where: { id: req.usuario!.usuarioId },
-    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true, trocaObrigatoria: true },
   });
 
   if (!usuario) {
@@ -111,7 +114,7 @@ authRouter.put("/auth/me", autenticar, asyncHandler(async (req, res) => {
   const usuario = await prisma.usuario.update({
     where: { id: req.usuario!.usuarioId },
     data: { nome: parsed.data.nome },
-    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true, trocaObrigatoria: true },
   });
   res.json(usuario);
 }));
@@ -154,7 +157,7 @@ authRouter.put("/auth/me/foto", autenticar, asyncHandler(async (req, res) => {
   const usuario = await prisma.usuario.update({
     where: { id: usuarioId },
     data: { fotoEm: new Date() },
-    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true },
+    select: { id: true, nome: true, email: true, perfil: true, setor: true, fotoEm: true, trocaObrigatoria: true },
   });
   res.json(usuario);
 }));
@@ -196,9 +199,113 @@ authRouter.post("/auth/senha", autenticar, asyncHandler(async (req, res) => {
     res.status(400).json({ erro: "A senha atual está incorreta" });
     return;
   }
+  if (await bcrypt.compare(parsed.data.novaSenha, usuario.senhaHash)) {
+    res.status(400).json({ erro: "A nova senha precisa ser diferente da atual" });
+    return;
+  }
   await prisma.usuario.update({
     where: { id: usuario.id },
-    data: { senhaHash: await bcrypt.hash(parsed.data.novaSenha, 10) },
+    data: { senhaHash: await bcrypt.hash(parsed.data.novaSenha, 10), trocaObrigatoria: false },
   });
   res.status(204).send();
+}));
+
+// ---------------------------------------------- convite / esqueci a senha
+
+// Página /definir-senha: confere o link antes de mostrar o formulário.
+authRouter.get("/auth/acesso/:token", asyncHandler(async (req, res) => {
+  const t = await tokenValido(req.params.token);
+  if (!t) {
+    res.status(410).json({ erro: "Este link não vale mais. Peça um novo ao administrador ou use \"Esqueci minha senha\"." });
+    return;
+  }
+  res.json({ tipo: t.tipo, nome: t.usuario.nome, email: t.usuario.email });
+}));
+
+const definirSenhaSchema = z.object({ senha: z.string().min(8, "A senha precisa ter pelo menos 8 caracteres") });
+
+// Cria/redefine a senha pelo link e já entra no sistema.
+authRouter.post("/auth/acesso/:token", asyncHandler(async (req, res) => {
+  const parsed = definirSenhaSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ erro: parsed.error.issues[0]?.message ?? "Dados inválidos" });
+    return;
+  }
+  const t = await tokenValido(req.params.token);
+  if (!t) {
+    res.status(410).json({ erro: "Este link não vale mais. Peça um novo ao administrador ou use \"Esqueci minha senha\"." });
+    return;
+  }
+  const u = t.usuario;
+  await prismaBase.$transaction([
+    prismaBase.tokenAcesso.updateMany({ where: { usuarioId: u.id, usadoEm: null }, data: { usadoEm: new Date() } }),
+    prismaBase.usuario.update({
+      where: { id: u.id },
+      data: { senhaHash: await bcrypt.hash(parsed.data.senha, 10), convitePendente: false, trocaObrigatoria: false },
+    }),
+  ]);
+  falhas.delete(`e:${u.email.toLowerCase()}`);
+  void registrarAuditoria(prismaBase, {
+    acao: t.tipo === "CONVITE" ? "convite_aceito" : "senha_redefinida",
+    modulo: "acesso",
+    descricao: t.tipo === "CONVITE" ? `${u.nome} criou a senha pelo convite` : `${u.nome} redefiniu a senha pelo link`,
+    usuarioId: u.id,
+    usuarioNome: u.nome,
+    ip: req.ip ?? "?",
+  });
+  res.json({ token: assinarToken({ usuarioId: u.id, perfil: u.perfil }) });
+}));
+
+// "Esqueci minha senha": sempre responde igual (não revela se o e-mail existe).
+const pedidosEsqueci = new Map<string, number[]>();
+authRouter.post("/auth/esqueci-senha", asyncHandler(async (req, res) => {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const ip = req.ip ?? "?";
+  const agora = Date.now();
+  const recentesIp = (pedidosEsqueci.get(ip) ?? []).filter((x) => agora - x < JANELA_MS);
+  const recentesEmail = (pedidosEsqueci.get(email) ?? []).filter((x) => agora - x < JANELA_MS);
+  const resposta = { emailLigado: emailConfigurado() };
+  if (!email || recentesIp.length >= 10 || recentesEmail.length >= 3) {
+    res.json(resposta);
+    return;
+  }
+  pedidosEsqueci.set(ip, [...recentesIp, agora]);
+  pedidosEsqueci.set(email, [...recentesEmail, agora]);
+
+  const u = await prismaBase.usuario.findFirst({
+    where: { email: { equals: email, mode: "insensitive" }, ativo: true },
+    select: { id: true, nome: true, email: true, convitePendente: true },
+  });
+  if (u) {
+    const tipo = u.convitePendente ? "CONVITE" : "REDEFINICAO";
+    let enviado = false;
+    if (emailConfigurado()) {
+      const { link } = await gerarTokenAcesso(u.id, tipo);
+      enviado = await enviarLinkAcesso(u, tipo, link);
+    }
+    if (!enviado) {
+      // Sem e-mail ligado: os administradores geram o link em Usuários.
+      const admins = await prismaBase.usuario.findMany({ where: { ativo: true, perfil: "ADMIN" }, select: { id: true } });
+      await notificar(
+        admins.map((a) => a.id),
+        {
+          tipo: "senha_esquecida",
+          titulo: `${u.nome} esqueceu a senha`,
+          mensagem: `Gere um link de acesso em Usuários e mande para ${u.nome.split(" ")[0]} (WhatsApp, por exemplo).`,
+          href: `/dashboard/usuarios?acesso=${u.id}`,
+          severidade: "aviso",
+          chave: `senha_esquecida:${u.id}:${new Date().toISOString().slice(0, 13)}`,
+        },
+      );
+    }
+    void registrarAuditoria(prismaBase, {
+      acao: "esqueci_senha",
+      modulo: "acesso",
+      descricao: `${u.nome} pediu para redefinir a senha${enviado ? " (link enviado por e-mail)" : " (administradores avisados)"}`,
+      usuarioId: u.id,
+      usuarioNome: u.nome,
+      ip,
+    });
+  }
+  res.json(resposta);
 }));
